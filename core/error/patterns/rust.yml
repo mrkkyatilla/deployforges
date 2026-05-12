@@ -1,0 +1,36 @@
+patterns:
+  - name: compilation_error
+    regex: "error\\[E\\d+\\]"
+    severity: critical
+    auto_fixable: false
+    fix_strategy: report_to_user
+
+  - name: missing_crate
+    regex: "error\\[E0432\\]: unresolved import"
+    severity: high
+    auto_fixable: true
+    fix_strategy: check_cargo_deps
+
+  - name: linker_error
+    regex: "linking with `cc` failed"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+    fix_alpine: gcc musl-dev
+    fix_debian: gcc libc6-dev
+
+  - name: openssl_missing
+    regex: "Could not find directory of OpenSSL"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+    fix_alpine: openssl-dev pkgconf
+    fix_debian: libssl-dev pkg-config
+
+  - name: protobuf_missing
+    regex: "protoc.*not found"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+    fix_alpine: protobuf-dev
+    fix_debian: protobuf-compiler

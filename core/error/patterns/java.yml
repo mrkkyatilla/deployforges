@@ -1,0 +1,36 @@
+patterns:
+  - name: compilation_error
+    regex: "error: cannot find symbol"
+    severity: critical
+    auto_fixable: false
+    fix_strategy: report_to_user
+
+  - name: java_version_mismatch
+    regex: "source release (\\d+) requires target release (\\d+)"
+    severity: high
+    auto_fixable: true
+    fix_strategy: change_base_image
+
+  - name: maven_dependency_missing
+    regex: "Could not resolve dependencies"
+    severity: high
+    auto_fixable: false
+    fix_strategy: report_to_user
+
+  - name: gradle_build_failed
+    regex: "FAILURE: Build failed with an exception"
+    severity: high
+    auto_fixable: false
+    fix_strategy: analyze_with_ai
+
+  - name: jar_not_found
+    regex: "Error: Unable to access jarfile"
+    severity: high
+    auto_fixable: true
+    fix_strategy: fix_jar_path
+
+  - name: out_of_memory_java
+    regex: "java.lang.OutOfMemoryError"
+    severity: critical
+    auto_fixable: true
+    fix_strategy: increase_jvm_heap

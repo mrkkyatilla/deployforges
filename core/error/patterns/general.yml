@@ -1,0 +1,54 @@
+patterns:
+  - name: copy_not_found
+    regex: "COPY failed:.*not found"
+    severity: high
+    auto_fixable: true
+    fix_strategy: fix_copy_path
+
+  - name: cache_key_not_found
+    regex: "failed to compute cache key:.*not found"
+    severity: high
+    auto_fixable: true
+    fix_strategy: fix_copy_path
+
+  - name: invalid_base_image
+    regex: "manifest.*not found|pull access denied"
+    severity: high
+    auto_fixable: true
+    fix_strategy: fix_base_image
+
+  - name: permission_denied
+    regex: "Permission denied|EACCES: permission denied|Operation not permitted"
+    severity: medium
+    auto_fixable: true
+    fix_strategy: fix_permissions
+
+  - name: out_of_memory
+    regex: "Killed|out of memory|ENOMEM|JavaScript heap out of memory"
+    severity: critical
+    auto_fixable: true
+    fix_strategy: optimize_memory
+
+  - name: network_timeout
+    regex: "Could not resolve host|Failed to fetch|ETIMEDOUT|getaddrinfo.*failed"
+    severity: medium
+    auto_fixable: true
+    fix_strategy: retry_or_mirror
+
+  - name: disk_full
+    regex: "No space left on device|ENOSPC"
+    severity: critical
+    auto_fixable: false
+    fix_strategy: report_to_user
+
+  - name: build_timeout
+    regex: "timeout|deadline exceeded"
+    severity: medium
+    auto_fixable: true
+    fix_strategy: optimize_build_time
+
+  - name: returned_nonzero
+    regex: "returned a non-zero code: (\\d+)"
+    severity: high
+    auto_fixable: false
+    fix_strategy: analyze_with_ai

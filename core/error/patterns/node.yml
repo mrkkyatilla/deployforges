@@ -1,0 +1,38 @@
+patterns:
+  - name: module_not_found
+    regex: "Cannot find module '(.+)'"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_npm_package
+
+  - name: webpack_resolve_error
+    regex: "Module not found: Error: Can't resolve '(.+)'"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_npm_package
+
+  - name: node_version_mismatch
+    regex: "The engine \"node\" is incompatible with this module"
+    severity: high
+    auto_fixable: true
+    fix_strategy: change_base_image
+
+  - name: sharp_build_error
+    regex: "sharp.*ERR!|Cannot find module.*sharp"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+    fix_alpine: vips-dev
+    fix_debian: libvips-dev
+
+  - name: npm_audit_error
+    regex: "npm ERR! audit"
+    severity: low
+    auto_fixable: false
+    fix_strategy: ignore
+
+  - name: eacces_permission
+    regex: "EACCES: permission denied"
+    severity: medium
+    auto_fixable: true
+    fix_strategy: fix_permissions

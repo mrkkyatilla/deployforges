@@ -1,0 +1,16 @@
+patterns:
+  - name: nuget_restore_failed
+    regex: "error NU\\d+: Unable to resolve"
+    severity: high
+    auto_fixable: false
+    fix_strategy: analyze_with_ai
+  - name: sdk_version_mismatch
+    regex: "The current .NET SDK does not support targeting"
+    severity: high
+    auto_fixable: true
+    fix_strategy: change_base_image
+  - name: missing_project
+    regex: "The project file could not be found"
+    severity: high
+    auto_fixable: true
+    fix_strategy: fix_copy_path

@@ -1,0 +1,71 @@
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass, field
+
+from api.config import settings
+
+logger = logging.getLogger(__name__)
+
+MODEL_COST_PER_MILLION = {
+    "gemini-2.5-pro": {"input": 2.50, "output": 15.00},
+    "gemini-2.5-flash": {"input": 0.30, "output": 3.50},
+}
+
+STEP_ALLOCATIONS = {
+    "analysis": 0.10,
+    "generation": 0.30,
+    "fix_attempt": 0.15,
+    "compose": 0.10,
+    "dockerignore": 0.05,
+}
+
+COMPLEXITY_THRESHOLDS = {
+    "simple_fix": "gemini-2.5-flash",
+    "dockerignore": "gemini-2.5-flash",
+    "analysis_fallback": "gemini-2.5-flash",
+    "generation": "gemini-2.5-pro",
+    "complex_fix": "gemini-2.5-pro",
+    "compose": "gemini-2.5-pro",
+}
+
+
+@dataclass
+class TokenBudget:
+    total: int = field(default_factory=lambda: settings.default_token_budget)
+    spent: int = 0
+    breakdown: dict[str, int] = field(default_factory=dict)
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.total - self.spent)
+
+    def can_spend(self, step: str, minimum: int = 1000) -> tuple[bool, int]:
+        step_budget = int(self.total * STEP_ALLOCATIONS.get(step, 0.10))
+        allowed = min(step_budget, self.remaining)
+        return allowed >= minimum, allowed
+
+    def record(self, step: str, tokens: int) -> None:
+        self.spent += tokens
+        self.breakdown[step] = self.breakdown.get(step, 0) + tokens
+        logger.info(
+            "Token budget: spent %d/%d (+%d for %s), remaining %d",
+            self.spent, self.total, tokens, step, self.remaining,
+        )
+
+    @property
+    def cost_usd(self) -> float:
+        total = 0.0
+        for step, tokens in self.breakdown.items():
+            model = select_model_for_step(step)
+            costs = MODEL_COST_PER_MILLION.get(model, MODEL_COST_PER_MILLION["gemini-2.5-flash"])
+            total += (tokens / 1_000_000) * (costs["input"] + costs["output"]) / 2
+        return round(total, 6)
+
+
+def select_model_for_step(step: str) -> str:
+    return COMPLEXITY_THRESHOLDS.get(step, settings.gemini_pro_model)
+
+
+def estimate_tokens(text: str) -> int:
+    return len(text) // 4

@@ -1,0 +1,38 @@
+patterns:
+  - name: missing_system_header
+    regex: "fatal error: (.+)\\.h: No such file"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+    common_fixes:
+      Python.h: python3-dev
+      ffi.h: libffi-dev
+      openssl/ssl.h: libssl-dev
+      pg_config.h: libpq-dev
+
+  - name: missing_module
+    regex: "ModuleNotFoundError: No module named '(.+)'"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_python_package
+
+  - name: pip_no_matching_distribution
+    regex: "No matching distribution found for (.+)"
+    severity: high
+    auto_fixable: false
+    fix_strategy: check_python_version
+
+  - name: gcc_not_found
+    regex: "gcc.*not found|unable to execute.*gcc"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+    fix: "gcc"
+
+  - name: pg_config_missing
+    regex: "pg_config.*not found|Error: pg_config executable not found"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+    fix_alpine: postgresql-dev
+    fix_debian: libpq-dev

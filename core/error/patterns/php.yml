@@ -1,0 +1,37 @@
+patterns:
+  - name: extension_missing
+    regex: "Call to undefined function (\\w+)"
+    severity: high
+    auto_fixable: true
+    fix_strategy: install_php_extension
+
+  - name: composer_install_failed
+    regex: "composer.*install.*failed"
+    severity: high
+    auto_fixable: false
+    fix_strategy: analyze_with_ai
+
+  - name: pdo_missing
+    regex: "could not find driver"
+    severity: high
+    auto_fixable: true
+    fix_strategy: install_php_extension
+    fix: pdo pdo_mysql
+
+  - name: gd_missing
+    regex: "Call to undefined function imagecreate"
+    severity: high
+    auto_fixable: true
+    fix_strategy: install_php_extension
+    fix: gd
+    fix_alpine: freetype-dev libjpeg-turbo-dev libpng-dev
+    fix_debian: libfreetype6-dev libjpeg62-turbo-dev libpng-dev
+
+  - name: zip_extension
+    regex: "ext-zip.*required"
+    severity: high
+    auto_fixable: true
+    fix_strategy: install_php_extension
+    fix: zip
+    fix_alpine: libzip-dev
+    fix_debian: libzip-dev

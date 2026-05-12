@@ -1,0 +1,23 @@
+patterns:
+  - name: gem_install_failed
+    regex: "An error occurred while installing (\\w+)"
+    severity: high
+    auto_fixable: false
+    fix_strategy: analyze_with_ai
+  - name: native_extension_build
+    regex: "ERROR: Failed to build gem native extension"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+    fix_debian: build-essential
+    fix_alpine: build-base
+  - name: bundler_version
+    regex: "Could not find 'bundler'"
+    severity: medium
+    auto_fixable: true
+    fix_strategy: install_bundler
+  - name: ruby_version_mismatch
+    regex: "Your Ruby version is .* but your Gemfile specified"
+    severity: high
+    auto_fixable: true
+    fix_strategy: change_base_image

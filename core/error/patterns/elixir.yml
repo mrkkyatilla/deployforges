@@ -1,0 +1,21 @@
+patterns:
+  - name: hex_fetch_failed
+    regex: "Failed to fetch record for"
+    severity: high
+    auto_fixable: false
+    fix_strategy: analyze_with_ai
+  - name: missing_system_lib
+    regex: "cannot find -l(\\w+)"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+  - name: erlang_version
+    regex: "incompatible with.*Erlang/OTP"
+    severity: high
+    auto_fixable: true
+    fix_strategy: change_base_image
+  - name: release_not_found
+    regex: "Could not find release"
+    severity: medium
+    auto_fixable: true
+    fix_strategy: fix_release_config

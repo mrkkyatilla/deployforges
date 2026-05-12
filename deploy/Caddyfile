@@ -1,0 +1,7 @@
+# Hostname — Cloudflare A kaydı bu sunucunun IP'sine işaret etmeli.
+# Başka subdomain kullanıyorsan bu satırı güncelle.
+
+deploy.wrupup.com {
+    encode gzip
+    reverse_proxy api:8000
+}

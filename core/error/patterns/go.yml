@@ -1,0 +1,26 @@
+patterns:
+  - name: import_not_found
+    regex: "cannot find package \"(.+)\""
+    severity: high
+    auto_fixable: true
+    fix_strategy: go_mod_tidy
+
+  - name: cgo_error
+    regex: "cgo: .* not found|gcc.*not found"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_system_package
+    fix_alpine: gcc musl-dev
+    fix_debian: gcc libc6-dev
+
+  - name: go_version_mismatch
+    regex: "go: go.mod requires go >= (\\d+\\.\\d+)"
+    severity: high
+    auto_fixable: true
+    fix_strategy: change_base_image
+
+  - name: missing_go_sum
+    regex: "missing go.sum entry"
+    severity: medium
+    auto_fixable: true
+    fix_strategy: run_go_mod_tidy
