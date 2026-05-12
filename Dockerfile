@@ -6,7 +6,15 @@ RUN apt-get update && \
     apt-get install -y --no-install-recommends git && \
     rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml .
+# Hatchling needs package sources (not only pyproject.toml) to build the wheel.
+COPY pyproject.toml README.md LICENSE .
+COPY api ./api
+COPY cli ./cli
+COPY core ./core
+COPY db ./db
+COPY workers ./workers
+COPY sdk ./sdk
+
 RUN pip install --no-cache-dir --prefix=/install .
 
 FROM python:3.12-slim

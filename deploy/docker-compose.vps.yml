@@ -1,5 +1,5 @@
 # Single VPS deployment (no Docker Swarm).
-# From deployforge repo root: docker compose -f deploy/docker-compose.vps.yml --env-file .env up -d
+# From deployforges repo root: docker compose -f deploy/docker-compose.vps.yml --env-file .env up -d
 #
 # Requires .env in repo root with DB_PASSWORD and all DF_* vars.
 

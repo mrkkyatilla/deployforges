@@ -66,30 +66,47 @@ systemctl enable docker --now
 
 ---
 
-## 4. Repo’yu sunucuya alma
+## 4. Tek komut (yerel makineden rsync + kurulum)
 
-DeployForge deposunun kökünde `Dockerfile` bulunur (`deployforge/` klasörü).
+SSH anahtarın sunucuda tanımlıysa, **bilgisayarından** (repo kökü):
+
+```bash
+chmod +x deploy/push-and-boot.sh
+./deploy/push-and-boot.sh
+```
+
+- Kod `/opt/deployforges` altına rsync edilir (`--delete`: sunucudaki fazla dosyalar silinir).
+- Yerelde `deployforges/.env` varsa sunucuya da kopyalanır; yoksa sunucuda şablondan `.env` üretilir (`DB_PASSWORD` / `DF_ADMIN_API_KEY` rastgele).
+- Yerel `.env` göndermek istemezsen: `SKIP_LOCAL_ENV=1 ./deploy/push-and-boot.sh`
+
+---
+
+## 5. Repo’yu sunucuya alma (alternatif: manuel git)
+
+Depo kökünde `Dockerfile` bulunur (`deployforges/` veya senin klasör adın).
 
 ```bash
 cd /opt
-git clone https://github.com/YOUR_ORG/deployforge.git
-cd deployforge
+git clone https://github.com/YOUR_ORG/deployforges.git
+cd deployforges
 ```
 
 Monorepo kullanıyorsan (`detected_stack` gibi), sunucuda ilgili alt klasöre gir:
 
 ```bash
-cd /opt/detected_stack/deployforge
+cd /opt/detected_stack/deployforges
 ```
 
 SSH ile git kullanıyorsan deploy key ekle veya private repo için PAT.
 
 ---
 
-## 5. Ortam değişkenleri
+## 6. Ortam değişkenleri
+
+`push-and-boot.sh` kullanıyorsan ilk kurulumda çoğu adım otomatik; elle yapıyorsan:
 
 ```bash
-cd /opt/deployforge   # veya monorepo içindeki deployforge kökü
+cd /opt/deployforges   # veya monorepo içindeki kök
 cp deploy/.env.deploy.example .env
 nano .env
 ```
@@ -105,10 +122,12 @@ HTTPS için kullanılan hostname `deploy/Caddyfile` içindedir (varsayılan `dep
 
 ---
 
-## 6. İlk migration ve seed
+## 7. İlk migration ve seed
+
+Tek komut script’i migration’ı zaten çalıştırır. Elle yapıyorsan:
 
 ```bash
-cd /opt/deployforge   # repo kökü
+cd /opt/deployforges   # repo kökü
 docker compose -f deploy/docker-compose.vps.yml --env-file .env run --rm api alembic upgrade head
 # seed opsiyonel:
 docker compose -f deploy/docker-compose.vps.yml --env-file .env run --rm api python scripts/seed_dev.py
@@ -116,10 +135,10 @@ docker compose -f deploy/docker-compose.vps.yml --env-file .env run --rm api pyt
 
 ---
 
-## 7. Stack’i başlatma
+## 8. Stack’i başlatma
 
 ```bash
-cd /opt/deployforge
+cd /opt/deployforges
 docker compose -f deploy/docker-compose.vps.yml --env-file .env up -d --build
 ```
 
@@ -132,18 +151,26 @@ curl -s https://deploy.wrupup.com/api/v1/health
 
 ---
 
-## 8. Güncelleme (deploy)
+## 9. Güncelleme (deploy)
+
+Tekrar yerelden:
+
+```bash
+./deploy/push-and-boot.sh
+```
+
+Sunucuda git kullanıyorsan:
 
 ```bash
 ssh root@188.132.197.229
-cd /opt/deployforge
+cd /opt/deployforges
 git pull
 docker compose -f deploy/docker-compose.vps.yml --env-file .env up -d --build
 ```
 
 ---
 
-## 9. Güvenlik özeti
+## 10. Güvenlik özeti
 
 | Öğe | Öneri |
 |-----|--------|

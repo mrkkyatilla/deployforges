@@ -33,7 +33,16 @@ The server runs on `http://localhost:8000`. API docs: `http://localhost:8000/doc
 
 ### Production VPS (SSH + Cloudflare)
 
-Steps for Docker Compose + automatic HTTPS on a single VPS: [deploy/VPS-DEPLOY.md](https://www.google.com/search?q=deploy/VPS-DEPLOY.md)
+Tek VPS için adımlar: [deploy/VPS-DEPLOY.md](deploy/VPS-DEPLOY.md).
+
+Yerel makinede SSH anahtarın sunucuya ekliyse (`ssh root@188.132.197.229` parolasız açılıyorsa):
+
+```bash
+chmod +x deploy/push-and-boot.sh
+./deploy/push-and-boot.sh
+```
+
+Varsayılan hedef `root@188.132.197.229:/opt/deployforges`; alan adı `deploy/Caddyfile` içinde `deploy.wrupup.com`.
 
 ---
 
