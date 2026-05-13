@@ -42,9 +42,15 @@ _ALLOWED_UPLOAD_EXTENSIONS = {".zip", ".tar", ".tar.gz", ".tgz"}
 
 
 def _project_links(project_id: UUID) -> ProjectLinks:
-    """Build links using Python field names (self_), not the JSON alias."""
+    """Build from JSON-shaped dict so ``self`` alias always validates."""
     base = f"/projects/{project_id}"
-    return ProjectLinks(self_=base, builds=f"{base}/builds", events=f"{base}/events")
+    return ProjectLinks.model_validate(
+        {
+            "self": base,
+            "builds": f"{base}/builds",
+            "events": f"{base}/events",
+        }
+    )
 
 
 def _enqueue_pipeline(project_id: UUID) -> None:

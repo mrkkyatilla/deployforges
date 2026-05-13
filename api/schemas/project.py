@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from uuid import UUID
 
-from pydantic import BaseModel, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl
 
 
 class SourceInput(BaseModel):
@@ -27,6 +27,10 @@ class CreateProjectRequest(BaseModel):
 
 
 class ProjectLinks(BaseModel):
+    """HATEOAS-style relative URLs. JSON uses ``self`` (reserved in Python → ``self_``)."""
+
+    model_config = ConfigDict(populate_by_name=True)
+
     self_: str = Field(alias="self")
     builds: str
     events: str
