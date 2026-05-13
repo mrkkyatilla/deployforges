@@ -8,6 +8,7 @@ import os
 import uuid
 
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 # VPS / Docker: set DF_DATABASE_URL (same as API). Local default matches docker-compose.yml db.
@@ -20,14 +21,34 @@ TEST_USER_EMAIL = "dev@deployforge.local"
 TEST_API_KEY = "df_live_dev_test_key_for_local_development_only"
 
 
+def _missing_tables_hint(exc: ProgrammingError) -> bool:
+    raw = str(exc.orig) if getattr(exc, "orig", None) else str(exc)
+    return "does not exist" in raw and "users" in raw
+
+
 async def seed():
     engine = create_async_engine(DATABASE_URL)
     try:
         async with AsyncSession(engine) as db:
-            result = await db.execute(
-                text("SELECT id FROM users WHERE email = :email"),
-                {"email": TEST_USER_EMAIL},
-            )
+            try:
+                result = await db.execute(
+                    text("SELECT id FROM users WHERE email = :email"),
+                    {"email": TEST_USER_EMAIL},
+                )
+            except ProgrammingError as exc:
+                if _missing_tables_hint(exc):
+                    print(
+                        "\nHATA: Veritabanında `users` tablosu yok — Alembic migration "
+                        "çalıştırılmamış.\n\n"
+                        "Önce (repo kökünden):\n"
+                        "  docker compose -f deploy/docker-compose.vps.yml --env-file .env "
+                        "run --rm api alembic upgrade head\n\n"
+                        "Sonra tekrar seed:\n"
+                        "  docker compose -f deploy/docker-compose.vps.yml --env-file .env "
+                        "run --rm api python scripts/seed_dev.py\n"
+                    )
+                    raise SystemExit(1) from exc
+                raise
             existing = result.scalar_one_or_none()
             if existing:
                 print(f"User already exists: {TEST_USER_EMAIL}")
