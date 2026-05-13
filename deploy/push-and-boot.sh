@@ -18,8 +18,9 @@ DEPLOY_REMOTE="${DEPLOY_REMOTE:-/opt/deployforges}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-SSH=(ssh -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
-RSYNC=(rsync -az --delete --human-readable)
+SSH_KEY="${SSH_KEY:-$HOME/.ssh/deployforge_wrupup}"
+SSH=(ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new)
+RSYNC=(rsync -az --delete --human-readable -e "ssh -i $SSH_KEY -o StrictHostKeyChecking=accept-new")
 
 EXCLUDES=(
   --exclude '.git'
@@ -34,16 +35,16 @@ echo "==> Hedef: ${DEPLOY_SERVER}:${DEPLOY_REMOTE}"
 "${SSH[@]}" "${DEPLOY_SERVER}" "mkdir -p '${DEPLOY_REMOTE}'"
 
 echo "==> Kod senkronu (rsync)..."
-"${RSYNC[@]}" "${EXCLUDES[@]}" -e ssh "${ROOT}/" "${DEPLOY_SERVER}:${DEPLOY_REMOTE}/"
+"${RSYNC[@]}" "${EXCLUDES[@]}" "${ROOT}/" "${DEPLOY_SERVER}:${DEPLOY_REMOTE}/"
 
 if [[ "${SKIP_LOCAL_ENV:-0}" != "1" && -f "${ROOT}/.env" ]]; then
   echo "==> Yerel .env sunucuya kopyalanıyor..."
-  rsync -az "${ROOT}/.env" "${DEPLOY_SERVER}:${DEPLOY_REMOTE}/.env"
+  rsync -az -e "ssh -i $SSH_KEY" "${ROOT}/.env" "${DEPLOY_SERVER}:${DEPLOY_REMOTE}/.env"
 fi
 
 echo "==> Sunucuda Docker + migrate + compose..."
 "${SSH[@]}" "${DEPLOY_SERVER}" \
-  REMOTE_DIR="${DEPLOY_REMOTE}" \
+  "REMOTE_DIR=${DEPLOY_REMOTE}" \
   bash -s <<'REMOTE_BOOT'
 set -euo pipefail
 cd "$REMOTE_DIR"

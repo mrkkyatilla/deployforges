@@ -7,7 +7,7 @@ RUN apt-get update && \
     rm -rf /var/lib/apt/lists/*
 
 # Hatchling needs package sources (not only pyproject.toml) to build the wheel.
-COPY pyproject.toml README.md LICENSE .
+COPY pyproject.toml README.md LICENSE ./
 COPY api ./api
 COPY cli ./cli
 COPY core ./core
@@ -28,7 +28,7 @@ RUN groupadd -r app && useradd -r -g app -d /app app
 WORKDIR /app
 
 COPY --from=builder /install /usr/local
-COPY . .
+COPY . ./
 
 RUN chown -R app:app /app
 USER app
