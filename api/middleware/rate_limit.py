@@ -1,3 +1,4 @@
+import logging
 import time
 
 import redis.asyncio as redis
@@ -5,6 +6,8 @@ from fastapi import HTTPException, Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from api.config import settings
+
+logger = logging.getLogger(__name__)
 
 _redis: redis.Redis | None = None
 
@@ -32,37 +35,46 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         if not api_key:
             return await call_next(request)
 
-        r = await get_redis()
-        window = settings.rate_limit_window_seconds
-        now = int(time.time())
-        window_key = f"rl:{api_key}:{now // window}"
+        try:
+            r = await get_redis()
+            window = settings.rate_limit_window_seconds
+            now = int(time.time())
+            window_key = f"rl:{api_key}:{now // window}"
 
-        current = await r.incr(window_key)
-        if current == 1:
-            await r.expire(window_key, window)
+            current = await r.incr(window_key)
+            if current == 1:
+                await r.expire(window_key, window)
 
-        tier = await r.get(f"tier:{api_key}") or "free"
-        limit = TIER_LIMITS.get(tier, TIER_LIMITS["free"])
+            tier = await r.get(f"tier:{api_key}") or "free"
+            limit = TIER_LIMITS.get(tier, TIER_LIMITS["free"])
 
-        if current > limit:
-            raise HTTPException(
-                status_code=429,
-                detail={
-                    "type": "https://api.deployforge.dev/errors/rate-limit-exceeded",
-                    "title": "Rate Limit Exceeded",
-                    "status": 429,
-                    "detail": f"Rate limit of {limit} requests per hour exceeded.",
-                },
-                headers={
-                    "X-RateLimit-Limit": str(limit),
-                    "X-RateLimit-Remaining": "0",
-                    "X-RateLimit-Reset": str(((now // window) + 1) * window),
-                    "Retry-After": str(window - (now % window)),
-                },
+            if current > limit:
+                raise HTTPException(
+                    status_code=429,
+                    detail={
+                        "type": "https://api.deployforge.dev/errors/rate-limit-exceeded",
+                        "title": "Rate Limit Exceeded",
+                        "status": 429,
+                        "detail": f"Rate limit of {limit} requests per hour exceeded.",
+                    },
+                    headers={
+                        "X-RateLimit-Limit": str(limit),
+                        "X-RateLimit-Remaining": "0",
+                        "X-RateLimit-Reset": str(((now // window) + 1) * window),
+                        "Retry-After": str(window - (now % window)),
+                    },
+                )
+
+            response: Response = await call_next(request)
+            response.headers["X-RateLimit-Limit"] = str(limit)
+            response.headers["X-RateLimit-Remaining"] = str(max(0, limit - current))
+            response.headers["X-RateLimit-Reset"] = str(((now // window) + 1) * window)
+            return response
+        except HTTPException:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Rate limiting skipped: Redis unavailable (%s). Request allowed.",
+                exc,
             )
-
-        response: Response = await call_next(request)
-        response.headers["X-RateLimit-Limit"] = str(limit)
-        response.headers["X-RateLimit-Remaining"] = str(max(0, limit - current))
-        response.headers["X-RateLimit-Reset"] = str(((now // window) + 1) * window)
-        return response
+            return await call_next(request)
