@@ -2,8 +2,9 @@ import logging
 import time
 
 import redis.asyncio as redis
-from fastapi import HTTPException, Request, Response
+from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.responses import JSONResponse
 
 from api.config import settings
 
@@ -49,29 +50,25 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             limit = TIER_LIMITS.get(tier, TIER_LIMITS["free"])
 
             if current > limit:
-                raise HTTPException(
-                    status_code=429,
-                    detail={
-                        "type": "https://api.deployforge.dev/errors/rate-limit-exceeded",
-                        "title": "Rate Limit Exceeded",
-                        "status": 429,
-                        "detail": f"Rate limit of {limit} requests per hour exceeded.",
-                    },
-                    headers={
-                        "X-RateLimit-Limit": str(limit),
-                        "X-RateLimit-Remaining": "0",
-                        "X-RateLimit-Reset": str(((now // window) + 1) * window),
-                        "Retry-After": str(window - (now % window)),
-                    },
-                )
+                body = {
+                    "type": "https://api.deployforge.dev/errors/rate-limit-exceeded",
+                    "title": "Rate Limit Exceeded",
+                    "status": 429,
+                    "detail": f"Rate limit of {limit} requests per hour exceeded.",
+                }
+                headers = {
+                    "X-RateLimit-Limit": str(limit),
+                    "X-RateLimit-Remaining": "0",
+                    "X-RateLimit-Reset": str(((now // window) + 1) * window),
+                    "Retry-After": str(window - (now % window)),
+                }
+                return JSONResponse(content=body, status_code=429, headers=headers)
 
             response: Response = await call_next(request)
             response.headers["X-RateLimit-Limit"] = str(limit)
             response.headers["X-RateLimit-Remaining"] = str(max(0, limit - current))
             response.headers["X-RateLimit-Reset"] = str(((now // window) + 1) * window)
             return response
-        except HTTPException:
-            raise
         except Exception as exc:
             logger.warning(
                 "Rate limiting skipped: Redis unavailable (%s). Request allowed.",
