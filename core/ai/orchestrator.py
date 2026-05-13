@@ -5,6 +5,7 @@ import json
 import logging
 import operator
 import time
+import uuid
 from pathlib import Path
 from typing import Annotated, Any, TypedDict
 from uuid import UUID
@@ -372,19 +373,33 @@ async def pre_build_validate_node(state: DeployForgeState) -> dict[str, Any]:
     await _emit(pid, "step_start", {"step": "pre_build_validate"})
 
     validator = PreBuildValidator()
-    result = validator.validate(
-        dockerfile=state["current_dockerfile"],
+    result = await validator.validate(
         project_path=state["project_path"],
+        dockerfile=state["current_dockerfile"],
     )
 
     if not result.can_build:
-        logger.warning("Pre-build validation failed for %s: %s", pid, result.errors)
-        await _emit(pid, "step_error", {"step": "pre_build_validate", "errors": result.errors})
+        err_details = [err for err in result.errors if err.is_error]
+        logger.warning("Pre-build validation failed for %s: %s", pid, err_details)
+        await _emit(pid, "step_error", {
+            "step": "pre_build_validate",
+            "errors": [
+                {"name": err.name, "details": err.details, "is_error": err.is_error}
+                for err in err_details
+            ],
+        })
         return {
             "current_errors": [
-                {"error_type": "pre_build", "name": e, "auto_fixable": False,
-                 "severity": "high", "fix_strategy": "unknown", "match_text": e, "context": e}
-                for e in result.errors
+                {
+                    "error_type": "pre_build",
+                    "name": err.name,
+                    "auto_fixable": False,
+                    "severity": "high",
+                    "fix_strategy": "unknown",
+                    "match_text": (err.details or "")[:500],
+                    "context": err.details or "",
+                }
+                for err in err_details
             ],
         }
 
@@ -400,19 +415,22 @@ async def build_node(state: DeployForgeState) -> dict[str, Any]:
     start_ns = time.perf_counter_ns()
 
     sandbox = DockerBuildSandbox()
+    build_id = f"{pid[:8]}-a{attempt}-{uuid.uuid4().hex[:6]}"
     result: BuildResult = await sandbox.build(
-        dockerfile=state["current_dockerfile"],
-        context_path=state["project_path"],
-        timeout=settings.build_timeout_seconds,
+        project_path=state["project_path"],
+        dockerfile_content=state["current_dockerfile"],
+        build_id=build_id,
+        dockerignore_content=state.get("current_dockerignore") or None,
     )
 
+    combined_log = (result.logs or "") + (result.error_output or "")
     duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
     attempt_record = {
         "attempt": attempt,
         "success": result.success,
         "duration_ms": duration_ms,
         "image_digest": getattr(result, "image_digest", None),
-        "log_tail": (result.build_log or "")[-2000:],
+        "log_tail": combined_log[-2000:],
     }
 
     try:
@@ -422,7 +440,7 @@ async def build_node(state: DeployForgeState) -> dict[str, Any]:
                 attempt_number=attempt,
                 dockerfile_content=state["current_dockerfile"],
                 dockerignore_content=state.get("current_dockerignore", ""),
-                build_log=result.build_log,
+                build_log=combined_log or None,
                 build_status="success" if result.success else "failed",
                 image_digest=getattr(result, "image_digest", None),
                 duration_ms=duration_ms,
