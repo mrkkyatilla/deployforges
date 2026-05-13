@@ -1,4 +1,7 @@
 from pathlib import Path
+from typing import Literal
+
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -40,6 +43,10 @@ class Settings(BaseSettings):
     max_token_budget: int = 100_000
 
     # --- Build ---
+    # local_docker: subprocess docker against mounted socket (VPS celery-worker).
+    # kaniko: GCS + Cloud Run Job + Kaniko (requires gcloud in worker + DF_GCP_PROJECT_ID).
+    # skip: no image build; deploy step skipped when GCP unset (see orchestrator).
+    build_backend: Literal["local_docker", "kaniko", "skip"] = "local_docker"
     max_build_attempts: int = 5
     build_timeout_seconds: int = 600
     build_cpu_limit: str = "2"
@@ -83,6 +90,15 @@ class Settings(BaseSettings):
     @property
     def sync_database_url(self) -> str:
         return self.database_url.replace("+asyncpg", "")
+
+    @model_validator(mode="after")
+    def _validate_build_backend(self) -> Settings:
+        if self.build_backend == "kaniko" and not (self.gcp_project_id or "").strip():
+            raise ValueError(
+                "DF_BUILD_BACKEND=kaniko requires DF_GCP_PROJECT_ID to be set "
+                "(Kaniko uses GCS and Cloud Run Jobs in that project)."
+            )
+        return self
 
 
 settings = Settings()

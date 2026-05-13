@@ -23,7 +23,12 @@ from core.ai.templates import select_template
 from core.ai.token_manager import TokenBudget
 from core.analysis.engine import AnalysisEngine
 from core.analysis.fingerprint import ProjectFingerprint
-from core.builder.sandbox import BuildResult, DockerBuildSandbox, PreBuildValidator
+from core.builder.sandbox import (
+    BuildResult,
+    DockerBuildSandbox,
+    KanikoBuildSandbox,
+    PreBuildValidator,
+)
 from core.builder.validator import CloudRunValidator
 from core.error.classifier import BuildErrorClassifier, ClassifiedError
 from core.error.parser import extract_error_lines
@@ -407,6 +412,18 @@ async def pre_build_validate_node(state: DeployForgeState) -> dict[str, Any]:
     return {}
 
 
+def _deploy_port_from_state(state: DeployForgeState) -> int:
+    fp = state.get("fingerprint") or {}
+    port_block = fp.get("port")
+    if isinstance(port_block, dict):
+        v = port_block.get("value")
+        if isinstance(v, int):
+            return v
+        if isinstance(v, str) and v.isdigit():
+            return int(v)
+    return 8080
+
+
 async def build_node(state: DeployForgeState) -> dict[str, Any]:
     """Execute a Docker build inside a sandbox."""
     pid = state["project_id"]
@@ -414,14 +431,33 @@ async def build_node(state: DeployForgeState) -> dict[str, Any]:
     await _emit(pid, "step_start", {"step": "build", "attempt": attempt})
     start_ns = time.perf_counter_ns()
 
-    sandbox = DockerBuildSandbox()
     build_id = f"{pid[:8]}-a{attempt}-{uuid.uuid4().hex[:6]}"
-    result: BuildResult = await sandbox.build(
-        project_path=state["project_path"],
-        dockerfile_content=state["current_dockerfile"],
-        build_id=build_id,
-        dockerignore_content=state.get("current_dockerignore") or None,
-    )
+    backend = settings.build_backend
+
+    if backend == "skip":
+        result = BuildResult(
+            success=True,
+            image_ref=None,
+            image_digest=None,
+            logs="DF_BUILD_BACKEND=skip: image build skipped by configuration.",
+            duration_ms=0,
+        )
+    elif backend == "kaniko":
+        sandbox = KanikoBuildSandbox()
+        result = await sandbox.build(
+            project_path=state["project_path"],
+            dockerfile_content=state["current_dockerfile"],
+            build_id=build_id,
+            dockerignore_content=state.get("current_dockerignore") or None,
+        )
+    else:
+        sandbox = DockerBuildSandbox()
+        result = await sandbox.build(
+            project_path=state["project_path"],
+            dockerfile_content=state["current_dockerfile"],
+            build_id=build_id,
+            dockerignore_content=state.get("current_dockerignore") or None,
+        )
 
     combined_log = (result.logs or "") + (result.error_output or "")
     duration_ms = (time.perf_counter_ns() - start_ns) // 1_000_000
@@ -430,6 +466,7 @@ async def build_node(state: DeployForgeState) -> dict[str, Any]:
         "success": result.success,
         "duration_ms": duration_ms,
         "image_digest": getattr(result, "image_digest", None),
+        "image_ref": getattr(result, "image_ref", None),
         "log_tail": combined_log[-2000:],
     }
 
@@ -472,32 +509,59 @@ async def deploy_and_test_node(state: DeployForgeState) -> dict[str, Any]:
     pid = state["project_id"]
     await _emit(pid, "step_start", {"step": "deploy_and_test"})
 
+    gcp = (settings.gcp_project_id or "").strip()
+    if settings.build_backend == "skip" or not gcp:
+        reason = "build_skip" if settings.build_backend == "skip" else "no_gcp"
+        await _emit(pid, "step_complete", {
+            "step": "deploy_and_test",
+            "skipped": True,
+            "reason": reason,
+        })
+        return {
+            "deploy_url": "",
+            "health_check_result": {
+                "healthy": True,
+                "status_code": None,
+                "latency_ms": None,
+                "skipped": True,
+                "skip_reason": reason,
+            },
+            "smoke_test_result": {
+                "passed": True,
+                "details": f"Cloud Run deploy skipped ({reason}).",
+            },
+        }
+
     latest = state["build_attempts"][-1]
-    image_digest = latest.get("image_digest", "")
+    image_ref = latest.get("image_digest") or latest.get("image_ref") or ""
+    port = _deploy_port_from_state(state)
 
     validator = CloudRunValidator()
-    result = await validator.validate(
-        image_ref=image_digest,
-        project_id=settings.gcp_project_id,
-        region=settings.gcp_region,
-    )
+    result = await validator.validate(str(image_ref), port)
+
+    health = result.health
 
     await _emit(pid, "step_complete", {
         "step": "deploy_and_test",
-        "url": getattr(result, "url", ""),
-        "healthy": getattr(result, "healthy", False),
+        "url": result.service_url or "",
+        "healthy": health.healthy if health else False,
+        "smoke_passed": result.success,
     })
 
     return {
-        "deploy_url": getattr(result, "url", ""),
+        "deploy_url": result.service_url or "",
         "health_check_result": {
-            "healthy": getattr(result, "healthy", False),
-            "status_code": getattr(result, "status_code", None),
-            "latency_ms": getattr(result, "latency_ms", None),
+            "healthy": health.healthy if health else False,
+            "status_code": health.status_code if health else None,
+            "latency_ms": health.latency_ms if health else None,
         },
         "smoke_test_result": {
-            "passed": getattr(result, "smoke_passed", False),
-            "details": getattr(result, "smoke_details", None),
+            "passed": result.success,
+            "details": (
+                "; ".join(f"{s.test.name}: {s.details}" for s in result.smoke_tests)
+                if result.smoke_tests
+                else (result.error or "")
+            ),
         },
     }
 

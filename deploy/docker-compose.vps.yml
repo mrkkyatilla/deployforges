@@ -2,6 +2,9 @@
 # From deployforges repo root: docker compose -f deploy/docker-compose.vps.yml --env-file .env up -d
 #
 # Requires .env in repo root with DB_PASSWORD and all DF_* vars.
+#
+# Kaniko on worker: set INSTALL_GCLOUD=1 in .env (or export) before --build so celery-worker
+# includes google-cloud-cli. Host Docker builds: set DOCKER_GID to match `getent group docker`.
 
 services:
   workspace-init:
@@ -74,6 +77,8 @@ services:
     build:
       context: ..
       dockerfile: Dockerfile
+      args:
+        INSTALL_GCLOUD: ${INSTALL_GCLOUD:-0}
     command: celery -A workers.build_worker worker --loglevel=info --concurrency=2
     restart: unless-stopped
     env_file:
@@ -81,8 +86,11 @@ services:
     environment:
       DF_DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/deployforge
       DF_REDIS_URL: redis://redis:6379/0
+    group_add:
+      - ${DOCKER_GID:-999}
     volumes:
       - deployforge_workspace:/tmp/deployforge/workspaces
+      - /var/run/docker.sock:/var/run/docker.sock
     depends_on:
       workspace-init:
         condition: service_completed_successfully

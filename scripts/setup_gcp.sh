@@ -45,6 +45,21 @@ EOF
     echo "   Created bucket: gs://${BUCKET_NAME} (auto-delete after 1 day)"
 fi
 
+KANIKO_CTX_BUCKET="${PROJECT_ID}-build-contexts"
+echo ""
+echo "2b. Kaniko context bucket (DF_BUILD_BACKEND=kaniko uses gs://${KANIKO_CTX_BUCKET}/...)"
+if gsutil ls -b "gs://${KANIKO_CTX_BUCKET}" &>/dev/null; then
+    echo "   Bucket already exists: gs://${KANIKO_CTX_BUCKET}"
+else
+    gsutil mb -l europe-west1 "gs://${KANIKO_CTX_BUCKET}"
+    gsutil lifecycle set /dev/stdin "gs://${KANIKO_CTX_BUCKET}" <<'EOF'
+{
+  "rule": [{"action": {"type": "Delete"}, "condition": {"age": 1}}]
+}
+EOF
+    echo "   Created bucket: gs://${KANIKO_CTX_BUCKET} (auto-delete after 1 day)"
+fi
+
 echo ""
 echo "3. Creating service account..."
 SA_NAME="deployforge-builder"
@@ -89,5 +104,6 @@ echo ""
 echo "  DF_GCP_PROJECT_ID=$PROJECT_ID"
 echo "  DF_GCP_REGION=europe-west1"
 echo "  GOOGLE_APPLICATION_CREDENTIALS=$KEY_PATH"
+echo "  DF_BUILD_BACKEND=kaniko   # optional; requires gcloud in the celery-worker image (INSTALL_GCLOUD=1)"
 echo ""
 echo "══════════════════════════════════════════════"

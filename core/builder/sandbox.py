@@ -177,9 +177,23 @@ class PreBuildValidator:
                         headers={"Accept": "application/vnd.docker.distribution.manifest.v2+json"},
                     )
                     if resp.status_code >= 400:
-                        results.append(
-                            CheckResult("base_image", True, f"Base image may not exist: {image} (HTTP {resp.status_code})")
-                        )
+                        if resp.status_code in (401, 403, 429):
+                            results.append(
+                                CheckResult(
+                                    "base_image",
+                                    False,
+                                    f"Registry returned HTTP {resp.status_code} for {image} "
+                                    "(auth/rate limit); cannot verify remotely — continuing.",
+                                )
+                            )
+                        else:
+                            results.append(
+                                CheckResult(
+                                    "base_image",
+                                    True,
+                                    f"Base image may not exist: {image} (HTTP {resp.status_code})",
+                                )
+                            )
             except httpx.HTTPError:
                 results.append(
                     CheckResult("base_image", False, f"Could not verify base image: {image} (network error)")

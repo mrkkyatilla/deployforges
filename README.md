@@ -116,8 +116,9 @@ curl http://localhost:8000/api/v1/projects/{id}/result \
 | `DF_GEMINI_API_KEY` | Yes | Google AI Studio API key |
 | `DF_DATABASE_URL` | Yes | PostgreSQL connection string |
 | `DF_REDIS_URL` | Yes | Redis connection string |
-| `DF_GCP_PROJECT_ID` | For Build | Google Cloud project ID |
-| `DF_GCP_REGION` | For Build | Cloud Run region |
+| `DF_GCP_PROJECT_ID` | For Cloud Run deploy/test & Kaniko | Google Cloud project ID |
+| `DF_GCP_REGION` | With GCP | Cloud Run region |
+| `DF_BUILD_BACKEND` | No | `local_docker` (default), `kaniko` (needs GCP + gcloud in worker), `skip` |
 | `DF_ADMIN_API_KEY` | No | For admin endpoints |
 | `DF_DEBUG` | No | Debug mode (default: false) |
 
