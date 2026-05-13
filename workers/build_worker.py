@@ -10,6 +10,23 @@ from api.config import settings
 
 logger = logging.getLogger(__name__)
 
+
+async def _run_pipeline_in_loop(project_id: UUID) -> None:
+    """Run the LangGraph pipeline, then dispose the async DB pool.
+
+    Celery invokes ``asyncio.run()`` once per task (new event loop each time). A process-global
+    :class:`AsyncEngine` must not reuse connections across loops — that causes
+    ``attached to a different loop`` and asyncpg ``another operation is in progress``.
+    """
+    from core.ai.orchestrator import run_pipeline
+    from db.session import engine as aio_engine
+
+    try:
+        await run_pipeline(project_id)
+    finally:
+        await aio_engine.dispose()
+
+
 celery_app = Celery(
     "deployforge",
     broker=settings.redis_url,
@@ -36,13 +53,12 @@ def run_pipeline_task(self, project_id: str) -> dict:
     from sqlalchemy import create_engine
     from sqlalchemy.orm import Session
 
-    from core.ai.orchestrator import run_pipeline
     from db.models import Project
 
     logger.info("Starting pipeline for project %s (attempt %d)", project_id, self.request.retries + 1)
 
     try:
-        asyncio.run(run_pipeline(UUID(project_id)))
+        asyncio.run(_run_pipeline_in_loop(UUID(project_id)))
     except Exception as exc:
         logger.exception("Pipeline failed for project %s", project_id)
 
