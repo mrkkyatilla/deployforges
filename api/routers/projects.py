@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from datetime import datetime, timezone
 from pathlib import Path
 from uuid import UUID
 
@@ -38,6 +39,24 @@ from db.session import get_db
 logger = logging.getLogger(__name__)
 
 _ALLOWED_UPLOAD_EXTENSIONS = {".zip", ".tar", ".tar.gz", ".tgz"}
+
+
+def _project_links(project_id: UUID) -> ProjectLinks:
+    """Build links using Python field names (self_), not the JSON alias."""
+    base = f"/projects/{project_id}"
+    return ProjectLinks(self_=base, builds=f"{base}/builds", events=f"{base}/events")
+
+
+def _enqueue_pipeline(project_id: UUID) -> None:
+    try:
+        run_pipeline_task.delay(str(project_id))
+    except Exception as exc:
+        logger.exception("Failed to enqueue pipeline for project %s", project_id)
+        raise HTTPException(
+            status_code=503,
+            detail="Could not queue pipeline job (Redis/Celery unavailable).",
+        ) from exc
+
 
 router = APIRouter(prefix="/projects", tags=["projects"])
 
@@ -84,23 +103,21 @@ async def create_project(
 
     await db.flush()
 
-    run_pipeline_task.delay(str(project.id))
-
     await db.refresh(project)
 
-    return CreateProjectResponse(
+    created_at = project.created_at or datetime.now(timezone.utc)
+
+    response = CreateProjectResponse(
         id=project.id,
         status=project.status,
-        created_at=project.created_at,
+        created_at=created_at,
         estimated_duration_seconds=180,
-        links=ProjectLinks(
-            **{
-                "self": f"/projects/{project.id}",
-                "builds": f"/projects/{project.id}/builds",
-                "events": f"/projects/{project.id}/events",
-            }
-        ),
+        links=_project_links(project.id),
     )
+
+    _enqueue_pipeline(project.id)
+
+    return response
 
 
 @router.post("/upload", status_code=202, response_model=CreateProjectResponse)
@@ -161,24 +178,22 @@ async def upload_project(
 
     await db.flush()
 
-    run_pipeline_task.delay(str(project.id))
-    logger.info("Upload project %s queued (source_type=%s, size=%d bytes)", project.id, source_type, total_written)
-
     await db.refresh(project)
 
-    return CreateProjectResponse(
+    created_at = project.created_at or datetime.now(timezone.utc)
+
+    response = CreateProjectResponse(
         id=project.id,
         status=project.status,
-        created_at=project.created_at,
+        created_at=created_at,
         estimated_duration_seconds=180,
-        links=ProjectLinks(
-            **{
-                "self": f"/projects/{project.id}",
-                "builds": f"/projects/{project.id}/builds",
-                "events": f"/projects/{project.id}/events",
-            }
-        ),
+        links=_project_links(project.id),
     )
+
+    _enqueue_pipeline(project.id)
+    logger.info("Upload project %s queued (source_type=%s, size=%d bytes)", project.id, source_type, total_written)
+
+    return response
 
 
 def _get_archive_extension(filename: str) -> str:
