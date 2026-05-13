@@ -86,6 +86,8 @@ async def create_project(
 
     run_pipeline_task.delay(str(project.id))
 
+    await db.refresh(project)
+
     return CreateProjectResponse(
         id=project.id,
         status=project.status,
@@ -161,6 +163,8 @@ async def upload_project(
 
     run_pipeline_task.delay(str(project.id))
     logger.info("Upload project %s queued (source_type=%s, size=%d bytes)", project.id, source_type, total_written)
+
+    await db.refresh(project)
 
     return CreateProjectResponse(
         id=project.id,
