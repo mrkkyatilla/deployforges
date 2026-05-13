@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
 from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -92,7 +92,7 @@ class Settings(BaseSettings):
         return self.database_url.replace("+asyncpg", "")
 
     @model_validator(mode="after")
-    def _validate_build_backend(self) -> Settings:
+    def _validate_build_backend(self) -> Self:
         if self.build_backend == "kaniko" and not (self.gcp_project_id or "").strip():
             raise ValueError(
                 "DF_BUILD_BACKEND=kaniko requires DF_GCP_PROJECT_ID to be set "

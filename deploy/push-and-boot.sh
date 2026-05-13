@@ -12,7 +12,7 @@
 #
 set -euo pipefail
 
-DEPLOY_SERVER="${DEPLOY_SERVER:-root@188.132.197.229}"
+DEPLOY_SERVER="${DEPLOY_SERVER:-root@217.60.98.139}"
 DEPLOY_REMOTE="${DEPLOY_REMOTE:-/opt/deployforges}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
