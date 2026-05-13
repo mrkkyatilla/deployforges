@@ -33,14 +33,16 @@ celery_app.conf.update(
 @celery_app.task(bind=True, name="deployforge.run_pipeline", max_retries=2)
 def run_pipeline_task(self, project_id: str) -> dict:
     """Execute the full LangGraph pipeline for a project."""
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import Session
+
     from core.ai.orchestrator import run_pipeline
+    from db.models import Project
 
     logger.info("Starting pipeline for project %s (attempt %d)", project_id, self.request.retries + 1)
 
     try:
         asyncio.run(run_pipeline(UUID(project_id)))
-        logger.info("Pipeline completed successfully for project %s", project_id)
-        return {"project_id": project_id, "status": "success"}
     except Exception as exc:
         logger.exception("Pipeline failed for project %s", project_id)
 
@@ -49,6 +51,17 @@ def run_pipeline_task(self, project_id: str) -> dict:
 
         _mark_project_failed(project_id, str(exc))
         return {"project_id": project_id, "status": "failed", "error": str(exc)}
+
+    engine = create_engine(settings.sync_database_url)
+    try:
+        with Session(engine) as session:
+            proj = session.get(Project, UUID(project_id))
+            db_status = proj.status if proj else "unknown"
+    finally:
+        engine.dispose()
+
+    logger.info("Pipeline run finished for project %s (DB status=%s)", project_id, db_status)
+    return {"project_id": project_id, "status": db_status}
 
 
 def _mark_project_failed(project_id: str, error_message: str) -> None:
