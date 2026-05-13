@@ -10,7 +10,7 @@ from uuid import UUID
 import aiofiles
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,9 +21,7 @@ from api.middleware.auth import AuthenticatedUser, get_current_user
 from api.schemas.project import (
     AnalysisSummary,
     CreateProjectRequest,
-    CreateProjectResponse,
     CurrentBuildSummary,
-    ProjectLinks,
     ProjectListResponse,
     ProjectOptions,
     ProjectResult,
@@ -41,16 +39,26 @@ logger = logging.getLogger(__name__)
 _ALLOWED_UPLOAD_EXTENSIONS = {".zip", ".tar", ".tar.gz", ".tgz"}
 
 
-def _project_links(project_id: UUID) -> ProjectLinks:
-    """Build from JSON-shaped dict so ``self`` alias always validates."""
-    base = f"/projects/{project_id}"
-    return ProjectLinks.model_validate(
-        {
+def _iso_z(dt: datetime) -> str:
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.isoformat().replace("+00:00", "Z")
+
+
+def _queued_project_payload(project: Project, created_at: datetime) -> dict[str, object]:
+    """202 body as plain JSON (avoids Pydantic ``self`` / response_model edge cases)."""
+    base = f"/projects/{project.id}"
+    return {
+        "id": str(project.id),
+        "status": project.status,
+        "created_at": _iso_z(created_at),
+        "estimated_duration_seconds": 180,
+        "links": {
             "self": base,
             "builds": f"{base}/builds",
             "events": f"{base}/events",
-        }
-    )
+        },
+    }
 
 
 def _enqueue_pipeline(project_id: UUID) -> None:
@@ -87,13 +95,13 @@ async def _get_user_project(
     return project
 
 
-@router.post("/", status_code=202, response_model=CreateProjectResponse)
+@router.post("/", status_code=202)
 async def create_project(
     payload: CreateProjectRequest,
     user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _abuse: None = Depends(check_abuse),
-) -> CreateProjectResponse:
+) -> JSONResponse:
     project = Project(
         user_id=user.user_id,
         source_type=payload.source.type,
@@ -113,27 +121,20 @@ async def create_project(
 
     created_at = project.created_at or datetime.now(timezone.utc)
 
-    response = CreateProjectResponse(
-        id=project.id,
-        status=project.status,
-        created_at=created_at,
-        estimated_duration_seconds=180,
-        links=_project_links(project.id),
-    )
-
+    payload = _queued_project_payload(project, created_at)
     _enqueue_pipeline(project.id)
 
-    return response
+    return JSONResponse(status_code=202, content=payload)
 
 
-@router.post("/upload", status_code=202, response_model=CreateProjectResponse)
+@router.post("/upload", status_code=202)
 async def upload_project(
     file: UploadFile,
     options: str = Form("{}"),
     user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _abuse: None = Depends(check_abuse),
-) -> CreateProjectResponse:
+) -> JSONResponse:
     max_bytes = settings.max_upload_size_mb * 1024 * 1024
 
     filename = file.filename or ""
@@ -188,18 +189,11 @@ async def upload_project(
 
     created_at = project.created_at or datetime.now(timezone.utc)
 
-    response = CreateProjectResponse(
-        id=project.id,
-        status=project.status,
-        created_at=created_at,
-        estimated_duration_seconds=180,
-        links=_project_links(project.id),
-    )
-
+    payload = _queued_project_payload(project, created_at)
     _enqueue_pipeline(project.id)
     logger.info("Upload project %s queued (source_type=%s, size=%d bytes)", project.id, source_type, total_written)
 
-    return response
+    return JSONResponse(status_code=202, content=payload)
 
 
 def _get_archive_extension(filename: str) -> str:
