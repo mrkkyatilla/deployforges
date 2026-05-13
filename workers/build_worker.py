@@ -66,7 +66,7 @@ def _mark_project_failed(project_id: str, error_message: str) -> None:
         session.execute(
             update(Project)
             .where(Project.id == UUID(project_id))
-            .values(status="failed", error_message=error_message)
+            .values(status="failed", error_summary=error_message[:2000])
         )
         session.commit()
     engine.dispose()
