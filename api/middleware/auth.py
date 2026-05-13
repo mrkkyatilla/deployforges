@@ -45,7 +45,9 @@ async def get_current_user(
         .options(joinedload(APIKey.user))
         .where(APIKey.key_hash == key_hash, APIKey.is_active == 1)
     )
-    api_key_record = result.scalar_one_or_none()
+    # joinedload can duplicate rows in the raw result set; .unique() is required
+    # before scalar helpers (SQLAlchemy 2.0 async).
+    api_key_record = result.unique().scalar_one_or_none()
 
     if not api_key_record:
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
