@@ -8,6 +8,7 @@ license = { text = "MIT" }
 dependencies = [
     "fastapi[standard]",
     "uvicorn[standard]",
+    "email-validator>=2.0.0",
     "pydantic-settings",
     "sqlalchemy[asyncio]",
     "asyncpg",
