@@ -121,9 +121,9 @@ async def create_project(
 
 @router.post("/upload", status_code=202)
 async def upload_project(
+    background_tasks: BackgroundTasks,
     file: UploadFile,
     options: str = Form("{}"),
-    background_tasks: BackgroundTasks,
     user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _abuse: None = Depends(check_abuse),
