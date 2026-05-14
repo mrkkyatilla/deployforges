@@ -15,7 +15,7 @@ logger = logging.getLogger(__name__)
 
 PYTHON_FRAMEWORKS: dict[str, dict] = {
     "django": {
-        "file_signals": ["manage.py", "wsgi.py", "asgi.py"],
+        "file_signals": ["manage.py"],
         "import_signals": ["django"],
         "default_port": 8000,
         "build_command": "pip install -r requirements.txt",

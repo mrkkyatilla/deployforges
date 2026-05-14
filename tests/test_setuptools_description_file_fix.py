@@ -65,3 +65,24 @@ def test_description_file_re_matches_setuptools_message() -> None:
     m = orch._DESCRIPTION_FILE_RE.search(blob)
     assert m is not None
     assert m.group(1) == "README.md"
+
+
+def test_readme_inserted_into_builder_stage_before_uv_sync() -> None:
+    """``uv sync`` / PEP 517 metadata needs README next to ``pyproject.toml`` in the builder stage."""
+    df = (
+        "FROM python:3.10-slim AS builder\n"
+        "WORKDIR /app\n"
+        "RUN pip install --no-cache-dir uv\n"
+        "COPY pyproject.toml uv.lock ./\n"
+        "RUN uv sync --frozen --no-dev\n"
+        "FROM python:3.10-slim\n"
+        "WORKDIR /app\n"
+        "COPY --from=builder /opt/venv /opt/venv\n"
+        "CMD [\"python\", \"-c\", \"print(1)\"]\n"
+    )
+    out = orch._insert_copy_for_description_file(df, "README.md")
+    assert "COPY pyproject.toml uv.lock ./" in out
+    p = out.index("COPY pyproject.toml uv.lock ./")
+    r = out.index("COPY README.md /app/README.md")
+    u = out.index("RUN uv sync")
+    assert p < r < u

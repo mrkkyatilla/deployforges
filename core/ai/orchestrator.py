@@ -220,12 +220,79 @@ def _rewrite_wrong_relative_metadata_copy(
     return changed
 
 
+def _stage_from_line_indices(lines: list[str]) -> list[tuple[int, int]]:
+    from_idxs = [i for i, ln in enumerate(lines) if ln.strip().upper().startswith("FROM ")]
+    if not from_idxs:
+        return []
+    out: list[tuple[int, int]] = []
+    for j, start in enumerate(from_idxs):
+        end = from_idxs[j + 1] if j + 1 < len(from_idxs) else len(lines)
+        out.append((start, end))
+    return out
+
+
+def _workdir_at_line(lines: list[str], stage_start: int, up_to_line: int) -> str:
+    wd = "/app"
+    for i in range(stage_start, min(up_to_line + 1, len(lines))):
+        m = _WORKDIR_LINE_RE.match(lines[i])
+        if m:
+            wd = m.group(1).strip("\"'")
+    return wd
+
+
+def _stage_has_full_tree_copy_after(lines: list[str], stage_start: int, after_line: int, stage_end: int) -> bool:
+    """True if the stage copies the full build context (``.``) after ``after_line`` — metadata files then come from context."""
+    for i in range(after_line + 1, stage_end):
+        ls = lines[i].strip()
+        if not ls.upper().startswith("COPY "):
+            continue
+        if re.match(r"(?i)^COPY\s+--from=", ls):
+            continue
+        if re.match(r"(?i)^COPY\s+\.\s+", ls):
+            return True
+    return False
+
+
+def _insert_metadata_copy_after_pyproject_in_stages(lines: list[str], rel_path: str) -> None:
+    """When a stage only copies ``pyproject.toml`` (and lock) then runs ``uv``/``pip`` install, README/LICENSE must exist there too."""
+    inserts: list[tuple[int, str]] = []
+    for stage_start, stage_end in _stage_from_line_indices(lines):
+        copy_idx: int | None = None
+        for i in range(stage_start, stage_end):
+            ls = lines[i].strip()
+            if not ls.upper().startswith("COPY "):
+                continue
+            if "pyproject.toml" not in ls:
+                continue
+            if re.match(r"(?i)^COPY\s+--from=", ls):
+                continue
+            copy_idx = i
+            break
+        if copy_idx is None:
+            continue
+        if _stage_has_full_tree_copy_after(lines, stage_start, copy_idx, stage_end):
+            continue
+        root = _workdir_at_line(lines, stage_start, copy_idx)
+        dest = _metadata_copy_dest(root, rel_path)
+        segment = "\n".join(lines[stage_start:stage_end])
+        if _tail_has_copy_to_dest(segment, rel_path, dest):
+            continue
+        next_line = lines[copy_idx + 1].strip() if copy_idx + 1 < len(lines) else ""
+        if next_line.upper().startswith("COPY ") and rel_path in next_line and dest.split("/")[-1] in next_line:
+            continue
+        inserts.append((copy_idx, f"COPY {rel_path} {dest}"))
+
+    for copy_idx, new_line in sorted(inserts, key=lambda x: -x[0]):
+        lines.insert(copy_idx + 1, new_line)
+
+
 def _insert_copy_for_description_file(dockerfile: str, rel_path: str) -> str:
     """Ensure setuptools/pyproject metadata files exist under the **first** stage ``WORKDIR`` (repo root)."""
     rel_path = rel_path.strip().strip("\"'")
     if not rel_path or ".." in rel_path or rel_path.startswith("/"):
         return dockerfile
     lines = dockerfile.splitlines()
+    _insert_metadata_copy_after_pyproject_in_stages(lines, rel_path)
     from_idxs = [i for i, ln in enumerate(lines) if ln.strip().upper().startswith("FROM ")]
     if not from_idxs:
         return dockerfile
@@ -235,7 +302,7 @@ def _insert_copy_for_description_file(dockerfile: str, rel_path: str) -> str:
     tail = "\n".join(lines[stage_start:])
 
     if _tail_has_copy_to_dest(tail, rel_path, dest):
-        return dockerfile
+        return "\n".join(lines)
 
     _rewrite_wrong_relative_metadata_copy(lines, stage_start, rel_path, dest)
     tail = "\n".join(lines[stage_start:])
