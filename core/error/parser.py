@@ -24,6 +24,11 @@ def extract_error_lines(build_log: str, max_lines: int = 50) -> str:
         r"(?i)npm ERR!",
         r"(?i)COPY failed",
         r"(?i)returned a non-zero code",
+        r"(?i)non-zero exit",
+        r"(?i)exit code",
+        r"(?i)\buv\b",
+        r"(?i)usage:",
+        r"(?i)error:",
     ]
 
     compiled = [re.compile(p) for p in error_indicators]

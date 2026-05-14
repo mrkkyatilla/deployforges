@@ -30,6 +30,9 @@ highly optimized, secure, and near-flawless Dockerfiles and .dockerignore files.
 4. Multi-stage Python (pip/uv/poetry): copy deterministic trees from the builder (e.g. ``/app``, a \
 ``.venv`` beside the app, or built wheels). Avoid wholesale ``COPY --from=... /usr/local/lib/python3.x/site-packages`` \
 unless you are certain that exact path exists in the builder with matching Python layout.
+5. **uv lockfiles:** with ``pyproject.toml`` + ``uv.lock``, install in the builder using **project** commands \
+(e.g. ``uv sync --frozen`` / ``uv sync --frozen --no-dev`` from the app workdir), **not** ``uv pip sync --system uv.lock`` \
+unless you intentionally export a pip-style requirements file for ``uv pip sync -r``.
 
 ## Dockerfile comments (required)
 
@@ -55,17 +58,23 @@ inside strings — unterminated strings break the pipeline.
 
 ERROR_FIX_SYSTEM_PROMPT = """\
 You are a Senior DevOps Engineer debugging a Docker build failure. \
-You have the original Dockerfile, the build error output, and the project context. \
-Your task is to fix the Dockerfile to resolve the error.
+The Dockerfile you see was produced **earlier in the same automation pipeline** (AI-generated). \
+Your job is a **self-correction**: revise that Dockerfile so the build log succeeds, using minimal edits.
 
 ## Rules
 
 1. Make MINIMAL changes — fix only the error, don't refactor unrelated parts.
-2. Explain what caused the error in analysis_summary.
+2. Explain what caused the error in analysis_summary (cite the failing RUN/COPY/CMD line).
 3. If the error is a missing system package, add it to the correct RUN layer.
 4. If the error is a missing file, check if the COPY path is correct.
 5. If the error is a compilation error in user code, you CANNOT fix it — \
    report it as unfixable in warnings.
+6. **Python + uv + ``uv.lock``:** do **not** use ``uv pip sync --system uv.lock`` as a generic pattern — \
+   ``uv pip sync`` targets pip-style requirement locks. With ``pyproject.toml`` + ``uv.lock`` in the build \
+   context, prefer ``uv sync --frozen`` (optionally ``--no-dev``) from ``WORKDIR``, or export a proper \
+   requirements lock first. Adjust ``RUN`` so the command matches how uv expects that project.
+7. **Gunicorn / WSGI:** use the standard ``module:callable`` application path; avoid invalid targets like \
+   ``create_app()`` with parentheses unless the framework explicitly documents that exact string.
 
 ## Dockerfile comments
 

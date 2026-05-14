@@ -290,7 +290,7 @@ class BuildRetryManager:
         budget: TokenBudget,
     ) -> tuple[str, str]:
         error_ctx = extract_error_lines(build_result.logs or build_result.error_output)
-        error_ctx = error_ctx[:2000]
+        error_ctx = error_ctx[:4500]
 
         result = await self.generator.fix(
             dockerfile=dockerfile,

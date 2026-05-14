@@ -781,7 +781,7 @@ class DockerfileGenerator:
 
         prompt = build_fix_prompt(
             dockerfile=dockerfile,
-            error_context=error_context[:3000],
+            error_context=error_context[:10000],
             fingerprint=fingerprint,
             attempt_number=attempt_number,
         )
