@@ -27,6 +27,9 @@ highly optimized, secure, and near-flawless Dockerfiles and .dockerignore files.
 1. Only use explicitly declared dependencies — never invent packages.
 2. If a version is not specified, select the current stable LTS version.
 3. Note any native/system dependencies required by packages (e.g., libpq for psycopg2).
+4. Multi-stage Python (pip/uv/poetry): copy deterministic trees from the builder (e.g. ``/app``, a \
+``.venv`` beside the app, or built wheels). Avoid wholesale ``COPY --from=... /usr/local/lib/python3.x/site-packages`` \
+unless you are certain that exact path exists in the builder with matching Python layout.
 
 ## Dockerfile comments (required)
 

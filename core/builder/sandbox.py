@@ -25,6 +25,12 @@ _COPY_SRC_RE = re.compile(
     r"^\s*COPY\s+(?:--[a-z-]+=\S+\s+)*(.+)\s+\S+\s*$",
     re.IGNORECASE | re.MULTILINE,
 )
+_ADD_SRC_RE = re.compile(
+    r"^\s*ADD\s+(?:--[a-z-]+=\S+\s+)*(.+)\s+\S+\s*$",
+    re.IGNORECASE,
+)
+# COPY/ADD with --from= copies from another image/stage, not the build context — skip existence checks.
+_COPY_OR_ADD_FROM_STAGE = re.compile(r"(?i)\s--from=")
 _FROM_IMAGE_RE = re.compile(
     r"^\s*FROM\s+(?:--platform=\S+\s+)?(\S+)",
     re.IGNORECASE | re.MULTILINE,
@@ -131,7 +137,25 @@ class PreBuildValidator:
         results: list[CheckResult] = []
         root = Path(project_path)
 
-        for m in _COPY_SRC_RE.finditer(dockerfile):
+        for line in dockerfile.splitlines():
+            stripped = line.strip()
+            if not stripped or stripped.startswith("#"):
+                continue
+            upper = stripped.upper()
+            is_copy = upper.startswith("COPY ")
+            is_add = upper.startswith("ADD ")
+            if not is_copy and not is_add:
+                continue
+            if _COPY_OR_ADD_FROM_STAGE.search(stripped):
+                continue
+            if is_copy:
+                m = _COPY_SRC_RE.match(stripped)
+                label = "COPY"
+            else:
+                m = _ADD_SRC_RE.match(stripped)
+                label = "ADD"
+            if not m:
+                continue
             sources_part = m.group(1).strip()
             sources = sources_part.split()
             for src in sources:
@@ -139,10 +163,12 @@ class PreBuildValidator:
                     continue
                 if src == "." or "*" in src or "$" in src:
                     continue
+                if "://" in src:
+                    continue
                 src_path = root / src
                 if not src_path.exists():
                     results.append(
-                        CheckResult("referenced_files", True, f"COPY source not found: {src}")
+                        CheckResult("referenced_files", True, f"{label} source not found: {src}")
                     )
 
         if not results:
