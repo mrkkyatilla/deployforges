@@ -129,6 +129,23 @@ def _error_to_dict(err: ClassifiedError) -> dict:
     return dataclasses.asdict(err)
 
 
+def _failure_summary_from_final_report(final_report: Any) -> str | None:
+    """Human-readable line for DB ``error_summary`` when ``current_errors`` is empty (e.g. intake)."""
+    if not isinstance(final_report, dict) or not final_report:
+        return None
+    err = final_report.get("error")
+    detail = final_report.get("detail")
+    if err and detail is not None:
+        if isinstance(detail, (dict, list)):
+            detail_s = json.dumps(detail, default=str)
+        else:
+            detail_s = str(detail)
+        return f"{err}: {detail_s[:900]}"
+    if err:
+        return str(err)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Node implementations
 # ---------------------------------------------------------------------------
@@ -950,9 +967,18 @@ async def finalize_failure_node(state: DeployForgeState) -> dict[str, Any]:
     pid = state["project_id"]
 
     token_budget = _tb_from_state(state)
-    error_summary = []
+    error_summary: list[str] = []
     for err in state.get("current_errors", []):
         error_summary.append(f"{err.get('name', 'unknown')}: {err.get('match_text', '')[:200]}")
+
+    fr_line = _failure_summary_from_final_report(state.get("final_report"))
+    if fr_line:
+        error_summary.append(fr_line)
+
+    if not error_summary:
+        hist = state.get("error_history") or []
+        for item in hist[-5:]:
+            error_summary.append(str(item)[:300])
 
     report = {
         "status": "failed",

@@ -134,3 +134,10 @@ else:
 "
 cleanup_body
 echo ">>> Bitti"
+
+if [[ "$ST" == "failed" ]]; then
+  echo ""
+  echo ">>> failed — teşhis (sunucuda):"
+  echo "    docker compose -f deploy/docker-compose.vps.yml --env-file .env logs --tail=150 celery-worker"
+  echo "    docker compose -f deploy/docker-compose.vps.yml --env-file .env exec -T db psql -U postgres -d deployforge -c \"SELECT error_summary FROM projects WHERE id='${PID}';\""
+fi
