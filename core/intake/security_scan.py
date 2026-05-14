@@ -10,6 +10,25 @@ from api.config import settings
 
 _MAX_FILE_SIZE = 1_048_576  # 1 MB
 _SKIP_DIRS = {".git", "node_modules", "__pycache__"}
+# Path segments: skip heuristic secret / .env / suspicious scans (tutorial & test false positives).
+_SKIP_TREE_DIR_NAMES = frozenset({
+    "tests",
+    "test",
+    "testing",
+    "__tests__",
+    "examples",
+    "example",
+    "docs",
+    "doc",
+    "documentation",
+    "fixtures",
+    "fixture",
+    "testdata",
+    "test_data",
+    "__snapshots__",
+    "site",
+    "_site",
+})
 _DANGEROUS_FILE_PATTERNS = {
     "id_rsa",
     "id_ecdsa",
@@ -24,6 +43,19 @@ _SUSPICIOUS_PATTERNS: list[tuple[str, re.Pattern[str]]] = [
     ("curl_pipe_sh", re.compile(r"curl\s+[^\|]+\|\s*(?:ba)?sh")),
     ("wget_pipe_sh", re.compile(r"wget\s+[^\|]+\|\s*(?:ba)?sh")),
 ]
+
+
+def _is_skipped_scan_path(rel: str) -> bool:
+    """True if file lives under tutorial / test trees where fake credentials are expected."""
+    parts = Path(rel).parts
+    lowered = {p.lower() for p in parts}
+    if lowered & _SKIP_TREE_DIR_NAMES:
+        return True
+    for p in parts:
+        pl = p.lower()
+        if pl.startswith("tests_") or pl.startswith("test_"):
+            return True
+    return False
 
 
 @dataclass
@@ -60,6 +92,9 @@ class SecurityScanner:
                 continue
 
             rel = str(path.relative_to(project_path))
+
+            if _is_skipped_scan_path(rel):
+                continue
 
             if self._is_dangerous_file(path):
                 dangerous.append(rel)
