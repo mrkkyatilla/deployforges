@@ -1,4 +1,11 @@
 patterns:
+  # setuptools / PEP 517 metadata (pyproject "readme = ...") — must exist in runtime image
+  - name: setuptools_description_file_missing
+    regex: "(?i)Description file\\s+(\\S+)\\s+does not exist"
+    severity: high
+    auto_fixable: true
+    fix_strategy: add_description_file_copy
+
   - name: missing_system_header
     regex: "fatal error: (.+)\\.h: No such file"
     severity: high
@@ -38,7 +45,7 @@ patterns:
     fix_debian: libpq-dev
 
   - name: gunicorn_app_import_or_uri
-    regex: "(?i)gunicorn\\.errors\\.AppImportError|Failed to find (?:application|attribute)|class uri .*invalid|Invalid uri.*gunicorn|must be a string.*module:callable|Error:.*does not exist"
+    regex: "(?i)gunicorn\\.errors\\.AppImportError|Failed to find (?:application|attribute)|class uri .*invalid|Invalid uri.*gunicorn|must be a string.*module:callable|Error: (?!Description file)[^\\n]+does not exist"
     severity: high
     auto_fixable: true
     fix_strategy: ai_fix

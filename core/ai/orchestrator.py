@@ -4,6 +4,7 @@ import dataclasses
 import json
 import logging
 import operator
+import re
 import time
 import uuid
 from pathlib import Path
@@ -155,6 +156,48 @@ def _tb_from_state(state: DeployForgeState) -> TokenBudget:
 
 def _error_to_dict(err: ClassifiedError) -> dict:
     return dataclasses.asdict(err)
+
+
+_DESCRIPTION_FILE_RE = re.compile(
+    r"Description file\s+(\S+)\s+does not exist",
+    re.IGNORECASE,
+)
+
+
+def _insert_copy_for_description_file(dockerfile: str, rel_path: str) -> str:
+    """Insert ``COPY`` for setuptools/pyproject metadata files into the final stage (before USER/CMD)."""
+    rel_path = rel_path.strip().strip("\"'")
+    if not rel_path or ".." in rel_path or rel_path.startswith("/"):
+        return dockerfile
+    lines = dockerfile.splitlines()
+    from_idxs = [i for i, ln in enumerate(lines) if ln.strip().upper().startswith("FROM ")]
+    if not from_idxs:
+        return dockerfile
+    stage_start = from_idxs[-1]
+    tail = "\n".join(lines[stage_start:])
+    if re.search(rf"(?i)COPY\s+{re.escape(rel_path)}(\s|$)", tail):
+        return dockerfile
+    insert_at: int | None = None
+    for i in range(stage_start, len(lines)):
+        ls = lines[i].strip()
+        if ls.upper().startswith("USER "):
+            insert_at = i
+            break
+    if insert_at is None:
+        for i in range(stage_start, len(lines)):
+            ls = lines[i].strip()
+            if ls.upper().startswith("CMD ") or ls.upper().startswith("ENTRYPOINT "):
+                insert_at = i
+                break
+    if insert_at is None:
+        insert_at = len(lines)
+    if "/" not in rel_path:
+        copy_line = f"COPY {rel_path} ./"
+    else:
+        parent = rel_path.rsplit("/", 1)[0]
+        copy_line = f"RUN mkdir -p ./{parent}\nCOPY {rel_path} ./{rel_path}"
+    lines.insert(insert_at, copy_line)
+    return "\n".join(lines)
 
 
 def _failure_summary_from_final_report(final_report: Any) -> str | None:
@@ -1154,6 +1197,13 @@ async def auto_fix_build_node(state: DeployForgeState) -> dict[str, Any]:
         elif strategy == "add_copy" and suggested:
             if "COPY . ." in dockerfile:
                 dockerfile = dockerfile.replace("COPY . .", f"COPY {suggested}\nCOPY . .", 1)
+            else:
+                dockerfile = _insert_copy_for_description_file(dockerfile, suggested)
+        elif strategy == "add_description_file_copy":
+            blob = f"{err.get('match_text', '')} {err.get('context', '')}"
+            m = _DESCRIPTION_FILE_RE.search(blob)
+            if m:
+                dockerfile = _insert_copy_for_description_file(dockerfile, m.group(1))
 
     await _emit(pid, "step_complete", {"step": "auto_fix_build", "fixes_applied": len(errors)})
     return {"current_dockerfile": dockerfile, "current_errors": []}
