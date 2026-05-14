@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 TEMPLATES: dict[str, dict[str, str]] = {
     "python": {
         "default": """\
@@ -262,3 +264,94 @@ def select_template(language: str, variant: str = "default") -> str | None:
     if not lang_templates:
         return None
     return lang_templates.get(variant)
+
+
+def fingerprint_allows_template_first(project_path: str, fingerprint: dict) -> bool:
+    """Strong signal: single-language tree with only requirements.txt or package.json path."""
+    from pathlib import Path
+
+    if fingerprint.get("is_monorepo"):
+        return False
+    if len(fingerprint.get("services") or []) > 1:
+        return False
+    root = Path(project_path)
+    lang = (fingerprint.get("language") or {}).get("primary") or ""
+    deps = fingerprint.get("dependencies") or {}
+    manager = str(deps.get("manager") or "")
+
+    if lang == "python":
+        if (root / "pyproject.toml").is_file() or (root / "Pipfile").is_file():
+            return False
+        if manager == "pip" and (root / "requirements.txt").is_file():
+            return True
+        return False
+
+    if lang in ("javascript", "typescript"):
+        if not (root / "package.json").is_file():
+            return False
+        if (root / "pnpm-workspace.yaml").is_file():
+            return False
+        return True
+
+    return False
+
+
+def render_template_dockerfile(project_path: str, fingerprint: dict) -> str | None:
+    """Fill a stock template from fingerprint + on-disk files. Returns None if not supported."""
+    from pathlib import Path
+
+    root = Path(project_path)
+    lang = (fingerprint.get("language") or {}).get("primary") or "python"
+    template = select_template(lang)
+    if not template:
+        return None
+
+    fw = fingerprint.get("framework") or {}
+    fw_name = (fw.get("name") or "").lower() if isinstance(fw, dict) else str(fw).lower()
+    start_cmd = "uvicorn main:app --host 0.0.0.0 --port 8000"
+    if isinstance(fw, dict) and fw.get("start_command"):
+        start_cmd = str(fw["start_command"])
+
+    port_info = fingerprint.get("port") or {}
+    port = 8080
+    if isinstance(port_info, dict):
+        try:
+            port = int(port_info.get("value") or 8080)
+        except (TypeError, ValueError):
+            port = 8080
+
+    lang_ver = (fingerprint.get("language") or {}).get("version") or "3.12"
+    if lang in ("javascript", "typescript"):
+        raw_ver = (fingerprint.get("language") or {}).get("version") or "20"
+        lang_ver = re.sub(r"[^0-9.]+.*$", "", str(raw_ver)).strip(".") or "20"
+
+    if lang == "python":
+        dep_file = "requirements.txt"
+        if not (root / dep_file).is_file():
+            return None
+        sys_block = fingerprint.get("dependencies") or {}
+        sys_pkgs = sys_block.get("system_packages_needed") or {}
+        debian_pkgs = sys_pkgs.get("debian") or sys_pkgs.get("default") or []
+        system_deps = " ".join(str(p) for p in debian_pkgs) or "gcc"
+        return template.format(
+            version=lang_ver,
+            system_deps=system_deps,
+            dep_file=dep_file,
+            port=port,
+            start_command=start_cmd,
+        )
+
+    if lang in ("javascript", "typescript"):
+        build_step = "RUN npm run build" if "next" in fw_name or "nuxt" in fw_name else ""
+        build_output = "dist" if "vite" in fw_name else "build"
+        if "next" in fw_name:
+            build_output = ".next"
+        return template.format(
+            version=lang_ver,
+            build_step=build_step,
+            build_output=build_output,
+            port=port,
+            start_command=start_cmd or '["npm", "start"]',
+        )
+
+    return None

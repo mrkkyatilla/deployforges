@@ -101,5 +101,14 @@ def select_generation_model(fingerprint: dict | None) -> str:
     return COMPLEXITY_THRESHOLDS.get("generation", settings.gemini_pro_model)
 
 
+def select_generation_body_model(fingerprint: dict | None) -> str:
+    """Model for two-phase Dockerfile body (plain text)."""
+    if fingerprint_is_high_complexity(fingerprint):
+        return settings.gemini_pro_model
+    if settings.ai_generation_body_use_flash_for_simple:
+        return settings.gemini_flash_model
+    return settings.gemini_pro_model
+
+
 def estimate_tokens(text: str) -> int:
     return len(text) // 4

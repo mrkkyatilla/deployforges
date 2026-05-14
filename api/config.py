@@ -76,6 +76,18 @@ class Settings(BaseSettings):
     # Two-phase generation: (1) compact metadata JSON without embedded Dockerfile string,
     # (2) Dockerfile body as plain text — reduces JSON escaping / MAX_TOKENS truncation issues.
     ai_dockerfile_two_phase_enabled: bool = True
+    # Prefer fully rendered stock Dockerfile when fingerprint + tree are unambiguous (no Gemini).
+    ai_dockerfile_template_first_enabled: bool = True
+    # Fix prompts: ask model to touch only RUN/CMD layers when possible (aligned with two-phase body).
+    ai_dockerfile_locked_skeleton_fix_enabled: bool = True
+    # After N failed builds, Dockerfile fix step falls back to deterministic template (if available).
+    ai_early_stop_template_after_build_attempt: int = 4
+    # When True, Dockerfile body phase may use Flash for low-complexity projects (cheaper; test before prod).
+    ai_generation_body_use_flash_for_simple: bool = False
+    # Redis TTL (seconds) for Dockerfile plan + metadata JSON cache; 0 disables cache.
+    ai_pipeline_cache_ttl_seconds: int = 3600
+    # When True, compose AI returns small JSON patches merged into template YAML (not full compose file).
+    ai_compose_json_patch_enabled: bool = True
     # Minimum max_output_tokens floor for Pro generation (non-monorepo); capped by budget and
     # gemini_max_output_tokens_cap. Monorepos use ai_generation_output_floor_monorepo_tokens.
     ai_generation_output_floor_tokens: int = 4096
@@ -132,7 +144,17 @@ class Settings(BaseSettings):
         r"(?i)(api[_-]?key|secret|password|token)\s*[:=]\s*['\"][^'\"]+['\"]",
         r"(?i)-----BEGIN\s+(RSA\s+)?PRIVATE\s+KEY-----",
         r"AKIA[0-9A-Z]{16}",
+        r"(?i)(ghp|gho|github_pat)_[a-zA-Z0-9_]{20,}",
     ]
+
+    # --- Policy ---
+    dockerfile_policy_enabled: bool = True
+    dockerfile_policy_fail_on_violations: bool = True
+    compose_policy_fail_on_violations: bool = True
+
+    # --- Lint / pre-build strictness ---
+    lint_strict_mode: bool = False
+    prebuild_require_cmd_or_entrypoint_error: bool = False
 
     # --- Admin ---
     admin_api_key: str = ""

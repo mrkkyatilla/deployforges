@@ -1,8 +1,10 @@
 from __future__ import annotations
 
-import re
 import logging
+import re
 from dataclasses import dataclass, field
+
+from api.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -65,8 +67,9 @@ class DockerfileLinter:
     def _check_no_root(self, lines: list[str]) -> list[LintIssue]:
         has_user = any(line.strip().upper().startswith("USER ") for line in lines)
         if not has_user:
+            sev = "error" if settings.lint_strict_mode else "warning"
             return [LintIssue(
-                "DF002", "warning",
+                "DF002", sev,
                 "No USER directive — application will run as root",
                 auto_fix="ADD_USER",
             )]
@@ -108,7 +111,8 @@ class DockerfileLinter:
                         pass
 
         if not exposed_ports:
-            return [LintIssue("DF004", "warning", "No EXPOSE directive found")]
+            sev = "error" if settings.lint_strict_mode else "warning"
+            return [LintIssue("DF004", sev, "No EXPOSE directive found")]
 
         if port and port not in exposed_ports:
             return [LintIssue(
@@ -120,7 +124,8 @@ class DockerfileLinter:
     def _check_healthcheck(self, lines: list[str]) -> list[LintIssue]:
         has_hc = any(line.strip().upper().startswith("HEALTHCHECK ") for line in lines)
         if not has_hc:
-            return [LintIssue("DF005", "info", "No HEALTHCHECK directive")]
+            sev = "error" if settings.lint_strict_mode else "info"
+            return [LintIssue("DF005", sev, "No HEALTHCHECK directive")]
         return []
 
     def _check_no_secrets(self, lines: list[str]) -> list[LintIssue]:

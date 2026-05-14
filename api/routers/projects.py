@@ -20,6 +20,7 @@ from api.middleware.abuse import check_abuse
 from api.middleware.auth import AuthenticatedUser, get_current_user
 from api.schemas.project import (
     AnalysisSummary,
+    ComposeRiskPreviewResponse,
     CreateProjectRequest,
     CurrentBuildSummary,
     ProjectListResponse,
@@ -30,7 +31,7 @@ from api.schemas.project import (
     ProjectSummary,
     UsageInfo,
 )
-from workers.build_worker import run_pipeline_task
+from core.security.compose_policy import compose_risk_heuristic
 from db.models import AIInteraction, Build, Project
 from db.session import get_db
 
@@ -366,6 +367,43 @@ async def get_project_result(
         result=result,
         usage=usage,
         error_summary=project.error_summary,
+    )
+
+
+@router.get("/{project_id}/compose-risk", response_model=ComposeRiskPreviewResponse)
+async def compose_risk_preview(
+    project_id: UUID,
+    user: AuthenticatedUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> ComposeRiskPreviewResponse:
+    """Optional approval flow: lightweight risk flags from fingerprint (no LLM)."""
+    project = await _get_user_project(project_id, user, db)
+    fp: dict = {}
+    if project.fingerprint:
+        fp = project.fingerprint if isinstance(project.fingerprint, dict) else json.loads(
+            project.fingerprint,
+        )
+    services = fp.get("services") or []
+    n = len(services) if isinstance(services, list) else 1
+    has_db = any(
+        isinstance(s, dict) and str(s.get("type", "")).lower() == "database"
+        for s in services
+    )
+    exposes = any(isinstance(s, dict) and s.get("port") for s in services if isinstance(services, list))
+    h = compose_risk_heuristic(
+        service_count=max(n, 1),
+        exposes_host_ports=bool(exposes),
+        has_database=has_db,
+    )
+    notes: list[str] = []
+    if n >= 2:
+        notes.append("Multi-service compose may require human review before production.")
+    return ComposeRiskPreviewResponse(
+        project_id=project.id,
+        risk_level=str(h.get("risk_level", "low")),
+        score=int(h.get("score", 0)),
+        reasons=[str(x) for x in (h.get("reasons") or [])],
+        policy_notes=notes,
     )
 
 

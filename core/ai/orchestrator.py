@@ -16,6 +16,11 @@ from langgraph.graph.state import CompiledStateGraph
 from api.config import settings
 from core.ai.ai_interaction_extras import build_ai_interaction_extra
 from core.ai.context_builder import ContextBuilder
+from core.ai.pipeline_timing import (
+    emit_step_start_fields,
+    emit_timing_fields,
+    timing_row,
+)
 from core.ai.dockerfile_generator import DockerfileGenerator, DockerfileResult, FixResult
 from core.ai.dockerfile_linter import DockerfileLinter
 from core.ai.gemini_client import GeminiClient, is_transient_gemini_http_error
@@ -35,7 +40,7 @@ from core.builder.sandbox import (
 )
 from core.builder.validator import CloudRunValidator
 from core.error.classifier import BuildErrorClassifier, ClassifiedError
-from core.error.parser import extract_error_lines
+from core.security.dockerfile_policy import check_dockerfile_policy
 from core.intake.archive_handler import ArchiveHandler
 from core.intake.git_handler import GitHandler
 from core.intake.security_scan import SecurityScanner
@@ -88,6 +93,9 @@ class DeployForgeState(TypedDict):
     total_tokens_used: int
     token_budget: int
     token_breakdown: dict
+
+    # Metrics (F0)
+    pipeline_step_timings: Annotated[list[dict[str, Any]], operator.add]
 
     # Final output
     final_status: str
@@ -229,7 +237,12 @@ def _is_transient_gemini_crash(exc: BaseException) -> bool:
 async def intake_node(state: DeployForgeState) -> dict[str, Any]:
     """Git clone / archive extraction followed by a security pre-scan."""
     pid = state["project_id"]
-    await _emit(pid, "step_start", {"step": "intake"})
+    t0 = time.monotonic()
+    await _emit(
+        pid,
+        "step_start",
+        {"step": "intake", **emit_step_start_fields("intake")},
+    )
 
     project_path = state["project_path"]
     source_type = state["source_type"]
@@ -250,6 +263,7 @@ async def intake_node(state: DeployForgeState) -> dict[str, Any]:
             return {
                 "final_status": "failed",
                 "final_report": {"error": "intake_failed", "detail": result.error_message},
+                "pipeline_step_timings": [timing_row("intake", t0)],
             }
     elif source_type in ("zip", "tar", "tar.gz"):
         handler = ArchiveHandler()
@@ -263,6 +277,7 @@ async def intake_node(state: DeployForgeState) -> dict[str, Any]:
             return {
                 "final_status": "failed",
                 "final_report": {"error": "intake_failed", "detail": result.error_message},
+                "pipeline_step_timings": [timing_row("intake", t0)],
             }
 
     scanner = SecurityScanner()
@@ -279,16 +294,29 @@ async def intake_node(state: DeployForgeState) -> dict[str, Any]:
             "final_status": "failed",
             "final_report": {"error": "security_scan_failed", "detail": detail},
             "analysis_warnings": [f"Security threat detected: {scan.warnings[:3]}"],
+            "pipeline_step_timings": [timing_row("intake", t0)],
         }
 
-    await _emit(pid, "step_complete", {"step": "intake"})
-    return {"project_path": str(dest)}
+    await _emit(
+        pid,
+        "step_complete",
+        {"step": "intake", **emit_timing_fields("intake", t0)},
+    )
+    return {
+        "project_path": str(dest),
+        "pipeline_step_timings": [timing_row("intake", t0)],
+    }
 
 
 async def analyze_node(state: DeployForgeState) -> dict[str, Any]:
     """Deterministic project analysis via the AnalysisEngine."""
     pid = state["project_id"]
-    await _emit(pid, "step_start", {"step": "analyze"})
+    t0 = time.monotonic()
+    await _emit(
+        pid,
+        "step_start",
+        {"step": "analyze", **emit_step_start_fields("analyze")},
+    )
 
     engine = AnalysisEngine()
     fingerprint: ProjectFingerprint = await engine.analyze(state["project_path"])
@@ -299,25 +327,45 @@ async def analyze_node(state: DeployForgeState) -> dict[str, Any]:
         "language": fingerprint.language.primary,
         "framework": fingerprint.framework.name,
         "confidence": fingerprint.confidence,
+        **emit_timing_fields("analyze", t0),
     })
 
     return {
         "fingerprint": fp_dict,
         "analysis_confidence": fingerprint.confidence,
         "analysis_warnings": fingerprint.warnings,
+        "pipeline_step_timings": [timing_row("analyze", t0)],
     }
 
 
 async def ai_analyze_node(state: DeployForgeState) -> dict[str, Any]:
     """AI-augmented analysis for low-confidence fingerprints (<0.7)."""
     pid = state["project_id"]
-    await _emit(pid, "step_start", {"step": "ai_analyze"})
+    t0 = time.monotonic()
+    ts0 = state.get("total_tokens_used", 0)
+    await _emit(
+        pid,
+        "step_start",
+        {"step": "ai_analyze", **emit_step_start_fields("ai_analyze")},
+    )
 
     token_budget = _tb_from_state(state)
     can_spend, allowed = token_budget.can_spend("analysis")
     if not can_spend:
         logger.warning("Token budget too low for AI analysis, skipping")
-        return {"analysis_warnings": ["Skipped AI analysis: token budget exhausted"]}
+        await _emit(
+            pid,
+            "step_complete",
+            {
+                "step": "ai_analyze",
+                "skipped": True,
+                **emit_timing_fields("ai_analyze", t0, tokens_at_start=ts0, tokens_at_end=ts0),
+            },
+        )
+        return {
+            "analysis_warnings": ["Skipped AI analysis: token budget exhausted"],
+            "pipeline_step_timings": [timing_row("ai_analyze", t0, tokens_at_start=ts0, tokens_at_end=ts0)],
+        }
 
     ctx = ContextBuilder()
     file_tree = ctx.build_file_tree_list(state["project_path"])
@@ -414,7 +462,16 @@ async def ai_analyze_node(state: DeployForgeState) -> dict[str, Any]:
         logger.error("Failed to parse AI analysis response after repair")
         ai_warnings = ["AI analysis response was not valid JSON"]
 
-    await _emit(pid, "step_complete", {"step": "ai_analyze", "new_confidence": new_confidence})
+    await _emit(pid, "step_complete", {
+        "step": "ai_analyze",
+        "new_confidence": new_confidence,
+        **emit_timing_fields(
+            "ai_analyze",
+            t0,
+            tokens_at_start=ts0,
+            tokens_at_end=token_budget.spent,
+        ),
+    })
 
     return {
         "fingerprint": merged_fp,
@@ -422,13 +479,27 @@ async def ai_analyze_node(state: DeployForgeState) -> dict[str, Any]:
         "analysis_warnings": ai_warnings,
         "total_tokens_used": token_budget.spent,
         "token_breakdown": token_budget.breakdown,
+        "pipeline_step_timings": [
+            timing_row(
+                "ai_analyze",
+                t0,
+                tokens_at_start=ts0,
+                tokens_at_end=token_budget.spent,
+            ),
+        ],
     }
 
 
 async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
     """Generate a Dockerfile via the DockerfileGenerator."""
     pid = state["project_id"]
-    await _emit(pid, "step_start", {"step": "generate_dockerfile"})
+    t0 = time.monotonic()
+    ts0 = state.get("total_tokens_used", 0)
+    await _emit(
+        pid,
+        "step_start",
+        {"step": "generate_dockerfile", **emit_step_start_fields("generate_dockerfile")},
+    )
 
     token_budget = _tb_from_state(state)
     client = GeminiClient()
@@ -471,7 +542,10 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
                         interaction_type="generation_body",
                         prompt_tokens=bpt,
                         completion_tokens=bct,
-                        model_used=settings.gemini_pro_model,
+                        model_used=(
+                            (gen_result.io_meta or {}).get("phase2_model")
+                            or settings.gemini_pro_model
+                        ),
                         latency_ms=0,
                         extra=None,
                     )
@@ -495,7 +569,16 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
     await _emit(
         pid,
         "step_complete",
-        {"step": "generate_dockerfile", "warnings": gen_result.warnings},
+        {
+            "step": "generate_dockerfile",
+            "warnings": gen_result.warnings,
+            **emit_timing_fields(
+                "generate_dockerfile",
+                t0,
+                tokens_at_start=ts0,
+                tokens_at_end=token_budget.spent,
+            ),
+        },
     )
 
     return {
@@ -505,6 +588,14 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
         "dockerfile_critic": {},
         "total_tokens_used": token_budget.spent,
         "token_breakdown": token_budget.breakdown,
+        "pipeline_step_timings": [
+            timing_row(
+                "generate_dockerfile",
+                t0,
+                tokens_at_start=ts0,
+                tokens_at_end=token_budget.spent,
+            ),
+        ],
     }
 
 
@@ -633,7 +724,12 @@ def route_after_dockerfile_critic(state: DeployForgeState) -> str:
 async def lint_check_node(state: DeployForgeState) -> dict[str, Any]:
     """Run deterministic lint checks on the current Dockerfile."""
     pid = state["project_id"]
-    await _emit(pid, "step_start", {"step": "lint_check"})
+    t0 = time.monotonic()
+    await _emit(
+        pid,
+        "step_start",
+        {"step": "lint_check", **emit_step_start_fields("lint_check")},
+    )
 
     linter = DockerfileLinter()
     fp = state.get("fingerprint", {})
@@ -650,11 +746,13 @@ async def lint_check_node(state: DeployForgeState) -> dict[str, Any]:
             "step": "lint_check",
             "auto_fixed": True,
             "warnings": warnings,
+            **emit_timing_fields("lint_check", t0),
         })
         return {
             "lint_passed": True,
             "current_dockerfile": lint_result.fixed_dockerfile,
             "ai_warnings": warnings,
+            "pipeline_step_timings": [timing_row("lint_check", t0)],
         }
 
     await _emit(pid, "step_complete", {
@@ -662,8 +760,13 @@ async def lint_check_node(state: DeployForgeState) -> dict[str, Any]:
         "is_valid": lint_result.is_valid,
         "errors": [i.message for i in lint_result.errors],
         "warnings": warnings,
+        **emit_timing_fields("lint_check", t0),
     })
-    return {"lint_passed": lint_result.is_valid, "ai_warnings": warnings}
+    return {
+        "lint_passed": lint_result.is_valid,
+        "ai_warnings": warnings,
+        "pipeline_step_timings": [timing_row("lint_check", t0)],
+    }
 
 
 async def auto_fix_lint_node(state: DeployForgeState) -> dict[str, Any]:
@@ -686,7 +789,45 @@ async def auto_fix_lint_node(state: DeployForgeState) -> dict[str, Any]:
 async def pre_build_validate_node(state: DeployForgeState) -> dict[str, Any]:
     """Static pre-build validation before kicking off the actual build."""
     pid = state["project_id"]
-    await _emit(pid, "step_start", {"step": "pre_build_validate"})
+    t0 = time.monotonic()
+    await _emit(
+        pid,
+        "step_start",
+        {"step": "pre_build_validate", **emit_step_start_fields("pre_build_validate")},
+    )
+
+    if settings.dockerfile_policy_enabled:
+        viol = check_dockerfile_policy(state["current_dockerfile"])
+        if viol and settings.dockerfile_policy_fail_on_violations:
+            err_details = [
+                {
+                    "name": "dockerfile_policy",
+                    "details": f"{v.code} {v.message}" + (f" (line {v.line})" if v.line else ""),
+                    "is_error": True,
+                }
+                for v in viol
+            ]
+            logger.warning("Dockerfile policy failed for %s: %s", pid, err_details)
+            await _emit(pid, "step_error", {
+                "step": "pre_build_validate",
+                "errors": err_details,
+                **emit_timing_fields("pre_build_validate", t0),
+            })
+            return {
+                "current_errors": [
+                    {
+                        "error_type": "pre_build",
+                        "name": "dockerfile_policy",
+                        "auto_fixable": False,
+                        "severity": "high",
+                        "fix_strategy": "ai_fix",
+                        "match_text": (e["details"] or "")[:500],
+                        "context": e["details"] or "",
+                    }
+                    for e in err_details
+                ],
+                "pipeline_step_timings": [timing_row("pre_build_validate", t0)],
+            }
 
     validator = PreBuildValidator()
     result = await validator.validate(
@@ -703,6 +844,7 @@ async def pre_build_validate_node(state: DeployForgeState) -> dict[str, Any]:
                 {"name": err.name, "details": err.details, "is_error": err.is_error}
                 for err in err_details
             ],
+            **emit_timing_fields("pre_build_validate", t0),
         })
         return {
             "current_errors": [
@@ -717,10 +859,15 @@ async def pre_build_validate_node(state: DeployForgeState) -> dict[str, Any]:
                 }
                 for err in err_details
             ],
+            "pipeline_step_timings": [timing_row("pre_build_validate", t0)],
         }
 
-    await _emit(pid, "step_complete", {"step": "pre_build_validate"})
-    return {}
+    await _emit(
+        pid,
+        "step_complete",
+        {"step": "pre_build_validate", **emit_timing_fields("pre_build_validate", t0)},
+    )
+    return {"pipeline_step_timings": [timing_row("pre_build_validate", t0)]}
 
 
 def _deploy_port_from_state(state: DeployForgeState) -> int:
@@ -739,7 +886,16 @@ async def build_node(state: DeployForgeState) -> dict[str, Any]:
     """Execute a Docker build inside a sandbox."""
     pid = state["project_id"]
     attempt = state.get("current_attempt", 0) + 1
-    await _emit(pid, "step_start", {"step": "build", "attempt": attempt})
+    t0 = time.monotonic()
+    await _emit(
+        pid,
+        "step_start",
+        {
+            "step": "build",
+            "attempt": attempt,
+            **emit_step_start_fields("build"),
+        },
+    )
     start_ns = time.perf_counter_ns()
 
     build_id = f"{pid[:8]}-a{attempt}-{uuid.uuid4().hex[:6]}"
@@ -807,11 +963,13 @@ async def build_node(state: DeployForgeState) -> dict[str, Any]:
         "attempt": attempt,
         "success": result.success,
         "duration_ms": duration_ms,
+        **emit_timing_fields("build", t0),
     })
 
     return {
         "current_attempt": attempt,
         "build_attempts": [attempt_record],
+        "pipeline_step_timings": [timing_row("build", t0)],
     }
 
 
@@ -971,7 +1129,17 @@ async def ai_fix_build_node(state: DeployForgeState) -> dict[str, Any]:
     """Use Gemini to fix build errors that aren't auto-fixable."""
     pid = state["project_id"]
     attempt = state.get("current_attempt", 1)
-    await _emit(pid, "step_start", {"step": "ai_fix_build", "attempt": attempt})
+    t0 = time.monotonic()
+    ts0 = state.get("total_tokens_used", 0)
+    await _emit(
+        pid,
+        "step_start",
+        {
+            "step": "ai_fix_build",
+            "attempt": attempt,
+            **emit_step_start_fields("ai_fix_build"),
+        },
+    )
 
     token_budget = _tb_from_state(state)
     errors = state.get("current_errors", [])
@@ -989,6 +1157,7 @@ async def ai_fix_build_node(state: DeployForgeState) -> dict[str, Any]:
         fingerprint=state.get("fingerprint"),
         attempt_number=attempt,
         token_budget=token_budget,
+        project_path=state.get("project_path"),
     )
 
     fix_extra = (
@@ -1022,6 +1191,12 @@ async def ai_fix_build_node(state: DeployForgeState) -> dict[str, Any]:
         "step": "ai_fix_build",
         "attempt": attempt,
         "changes": fix_result.changes_made,
+        **emit_timing_fields(
+            "ai_fix_build",
+            t0,
+            tokens_at_start=ts0,
+            tokens_at_end=token_budget.spent,
+        ),
     })
 
     updated_dockerignore = fix_result.dockerignore or state.get("current_dockerignore", "")
@@ -1032,6 +1207,14 @@ async def ai_fix_build_node(state: DeployForgeState) -> dict[str, Any]:
         "current_errors": [],
         "total_tokens_used": token_budget.spent,
         "token_breakdown": token_budget.breakdown,
+        "pipeline_step_timings": [
+            timing_row(
+                "ai_fix_build",
+                t0,
+                tokens_at_start=ts0,
+                tokens_at_end=token_budget.spent,
+            ),
+        ],
     }
 
 
@@ -1046,6 +1229,7 @@ async def finalize_success_node(state: DeployForgeState) -> dict[str, Any]:
         "cost_usd": token_budget.cost_usd,
         "attempts": len(state.get("build_attempts", [])),
         "deploy_url": state.get("deploy_url", ""),
+        "pipeline_step_timings": state.get("pipeline_step_timings", []),
     }
 
     try:
@@ -1098,6 +1282,7 @@ async def finalize_failure_node(state: DeployForgeState) -> dict[str, Any]:
         "attempts": len(state.get("build_attempts", [])),
         "errors": error_summary[:10],
         "error_history_count": len(state.get("error_history", [])),
+        "pipeline_step_timings": state.get("pipeline_step_timings", []),
     }
 
     try:
@@ -1359,6 +1544,8 @@ async def run_pipeline(project_id: UUID) -> None:
         "total_tokens_used": 0,
         "token_budget": settings.default_token_budget,
         "token_breakdown": {},
+
+        "pipeline_step_timings": [],
 
         "final_status": "",
         "final_dockerfile": "",

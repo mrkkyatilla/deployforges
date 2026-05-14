@@ -1,15 +1,18 @@
 from __future__ import annotations
 
+import copy
 import logging
 from dataclasses import dataclass
 
 import yaml
 
+from api.config import settings
 from core.ai.gemini_client import GeminiClient
 from core.ai.gemini_json_repair import repair_model_json
-from core.ai.gemini_schemas import schema_compose_generation
+from core.ai.gemini_schemas import schema_compose_generation, schema_compose_service_patches
 from core.ai.json_response import parse_model_json_from_ai_response
 from core.ai.token_manager import TokenBudget, estimate_tokens, select_model_for_step
+from core.security.compose_policy import check_compose_policy
 
 logger = logging.getLogger(__name__)
 
@@ -154,6 +157,15 @@ class ComposeGenerator:
         compose_yml, tokens_used = await self._generate_with_ai(
             services, fingerprints, allowed, warnings, token_budget,
         )
+        pol = check_compose_policy(compose_yml)
+        if pol:
+            for v in pol:
+                warnings.append(f"{v.code}: {v.message} ({v.path})")
+            if settings.compose_policy_fail_on_violations:
+                warnings.append("Compose policy failed; reverting to template-only compose")
+                compose_yml = self._generate_template(
+                    services, fingerprints, "generic", warnings,
+                )
         token_budget.record("compose", tokens_used)
 
         return ComposeResult(
@@ -321,9 +333,133 @@ class ComposeGenerator:
 
         return env
 
+    @staticmethod
+    def _merge_compose_patches(base: dict, patches: list[dict]) -> None:
+        services = base.setdefault("services", {})
+        for p in patches:
+            if not isinstance(p, dict):
+                continue
+            name = p.get("service")
+            if not name or not isinstance(name, str) or name not in services:
+                continue
+            tgt = services[name]
+            env_pairs = p.get("environment") or []
+            if isinstance(env_pairs, list) and env_pairs:
+                env = dict(tgt.get("environment") or {})
+                for pair in env_pairs:
+                    if isinstance(pair, dict) and pair.get("name"):
+                        env[str(pair["name"])] = str(pair.get("value", ""))
+                tgt["environment"] = env
+            ports = p.get("ports")
+            if isinstance(ports, list) and ports:
+                existing = [str(x) for x in (tgt.get("ports") or [])]
+                tgt["ports"] = existing + [str(x) for x in ports]
+
+    @staticmethod
+    def _build_compose_patch_prompt(
+        services: list[dict],
+        fingerprints: dict[str, dict],
+    ) -> str:
+        lines = [
+            "A deterministic docker-compose template was already generated in code.",
+            "Return **only** JSON per schema: `patches` (array) and `warnings` (array).",
+            "Each patch targets an existing `service` name and may add `environment` name/value pairs "
+            "and/or extra `ports` entries. Do not invent new top-level services.",
+            "",
+            "Services:",
+        ]
+        for svc in services:
+            name = svc["name"]
+            fp = fingerprints.get(name, {})
+            lines.append(f"- {name}: type={svc.get('type')} port={svc.get('port')} root={svc.get('root_path', '.')}")
+            lines.append(f"  fingerprint subset: language={fp.get('language')} framework={fp.get('framework')}")
+        return "\n".join(lines)
+
     # ------------------------------------------------------------------
     # AI-based generation
     # ------------------------------------------------------------------
+
+    async def _generate_with_ai_json_patch(
+        self,
+        services: list[dict],
+        fingerprints: dict[str, dict],
+        max_tokens: int,
+        warnings: list[str],
+        token_budget: TokenBudget,
+    ) -> tuple[str, int]:
+        base_yml = self._generate_template(services, fingerprints, "generic", warnings)
+        try:
+            base = yaml.safe_load(base_yml) or {}
+        except yaml.YAMLError:
+            base = {"services": {}}
+        if not isinstance(base, dict):
+            base = {"services": {}}
+
+        prompt = self._build_compose_patch_prompt(services, fingerprints)
+        prompt_tokens = estimate_tokens(prompt)
+        output_limit = min(max_tokens - prompt_tokens, 4096)
+        if output_limit < 800:
+            output_limit = 800
+
+        model = select_model_for_step("compose")
+        system_instruction = (
+            "You output compact JSON only. Patches merge into an existing compose dict produced by DeployForge."
+        )
+        schema = schema_compose_service_patches()
+        try:
+            response = await self._gemini.generate_json(
+                prompt=prompt,
+                system_instruction=system_instruction,
+                model=model,
+                temperature=0.1,
+                max_output_tokens=output_limit,
+                response_schema=schema,
+                io_log_label="compose_generation_patch",
+            )
+        except Exception:
+            logger.error("AI compose patch generation failed", exc_info=True)
+            warnings.append("AI compose patch failed; using template compose only")
+            return base_yml, 0
+
+        pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
+        data = pr.data
+        total_tok = response.total_tokens
+        repair_resp = None
+        if data is None:
+            hint = "patches (array of objects with service, optional environment array, optional ports array), warnings"
+            repaired, repair_resp = await repair_model_json(
+                self._gemini,
+                broken_text=response.text,
+                key_hint=hint,
+                token_budget=token_budget,
+                spend_step="compose",
+                response_schema=schema,
+                io_log_label="compose_generation_patch",
+                parsed_dict=response.parsed_dict,
+            )
+            if repaired is not None:
+                data = repaired
+                if repair_resp is not None:
+                    total_tok += repair_resp.total_tokens
+
+        if not isinstance(data, dict):
+            warnings.append("Compose patch JSON invalid; using template only")
+            return base_yml, total_tok
+
+        raw_patches = data.get("patches")
+        patches = raw_patches if isinstance(raw_patches, list) else []
+        for w in data.get("warnings") or []:
+            if isinstance(w, str):
+                warnings.append(w)
+
+        merged = copy.deepcopy(base)
+        self._merge_compose_patches(merged, patches)
+        yml = yaml.dump(merged, default_flow_style=False, sort_keys=False, width=120)
+        try:
+            yaml.safe_load(yml)
+        except yaml.YAMLError:
+            warnings.append("Merged compose YAML may have syntax issues")
+        return yml, total_tok
 
     async def _generate_with_ai(
         self,
@@ -333,6 +469,10 @@ class ComposeGenerator:
         warnings: list[str],
         token_budget: TokenBudget,
     ) -> tuple[str, int]:
+        if settings.ai_compose_json_patch_enabled:
+            return await self._generate_with_ai_json_patch(
+                services, fingerprints, max_tokens, warnings, token_budget,
+            )
         prompt = self._build_ai_prompt(services, fingerprints)
         prompt_tokens = estimate_tokens(prompt)
         output_limit = min(max_tokens - prompt_tokens, 8192)

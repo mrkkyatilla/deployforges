@@ -23,6 +23,14 @@ from core.ai.json_response import (
     parse_model_json_from_ai_response,
     truncate_for_log,
 )
+from core.ai.pipeline_cache import (
+    cache_get_json,
+    cache_set_json,
+    enriched_fingerprint_cache_digest,
+    fingerprint_cache_digest,
+    metadata_cache_key,
+    plan_cache_key,
+)
 from core.ai.prompts.dockerfile import (
     build_critic_prompt,
     build_dockerfile_body_only_prompt,
@@ -41,10 +49,15 @@ from core.ai.prompts.system import (
     MASTER_DOCKERFILE_METADATA_SYSTEM_PROMPT,
     MASTER_SYSTEM_PROMPT,
 )
-from core.ai.templates import select_template
+from core.ai.templates import (
+    fingerprint_allows_template_first,
+    render_template_dockerfile,
+    select_template,
+)
 from core.ai.token_manager import (
     TokenBudget,
     fingerprint_is_high_complexity,
+    select_generation_body_model,
     select_generation_model,
     select_model_for_step,
 )
@@ -323,6 +336,14 @@ class DockerfileGenerator:
         can_spend, allowed = token_budget.can_spend("dockerfile_plan", minimum=400)
         if not can_spend:
             return None
+
+        dig = fingerprint_cache_digest(fingerprint)
+        ck = plan_cache_key(dig)
+        cached = await cache_get_json(ck)
+        if isinstance(cached, dict) and _plan_is_usable(cached):
+            logger.info("Dockerfile plan cache hit key=%s", dig[:16])
+            return cached
+
         schema = schema_dockerfile_plan()
         model = select_model_for_step("dockerfile_plan")
         prompt = build_plan_prompt(fingerprint, template)
@@ -373,6 +394,7 @@ class DockerfileGenerator:
                 pr.error,
             )
             return None
+        await cache_set_json(ck, data)
         return data
 
     async def generate(
@@ -384,6 +406,29 @@ class DockerfileGenerator:
         can_spend, allowed = token_budget.can_spend("generation")
         if not can_spend:
             raise RuntimeError("Token budget exhausted for generation step")
+
+        if settings.ai_dockerfile_template_first_enabled:
+            if fingerprint_allows_template_first(project_path, fingerprint):
+                rendered = render_template_dockerfile(project_path, fingerprint)
+                if rendered and _dockerfile_is_plausible(rendered):
+                    ign = (
+                        ".git\n__pycache__\n*.pyc\n.pytest_cache\n.venv\nvenv\n"
+                        "node_modules\ndist\n.next\n.env\n*.log\n"
+                    )
+                    result = DockerfileResult(
+                        dockerfile=rendered,
+                        dockerignore=ign,
+                        analysis_summary="Deterministic template-first Dockerfile (no LLM).",
+                        warnings=["template_first_deterministic"],
+                        tokens_used=0,
+                    )
+                    result.io_meta = {
+                        "interaction": "generation",
+                        "template_first": True,
+                        "parse_ok": True,
+                        "two_phase": False,
+                    }
+                    return result
 
         language = fingerprint.get("language", {}).get("primary", "python")
         template = select_template(language)
@@ -405,6 +450,7 @@ class DockerfileGenerator:
                 plan=plan,
                 token_budget=token_budget,
                 allowed=allowed,
+                project_path=project_path,
             )
         return await self._generate_single_json_dockerfile(
             enriched_fp=enriched_fp,
@@ -412,6 +458,7 @@ class DockerfileGenerator:
             plan=plan,
             token_budget=token_budget,
             allowed=allowed,
+            project_path=project_path,
         )
 
     async def _generate_two_phase_dockerfile(
@@ -422,60 +469,96 @@ class DockerfileGenerator:
         plan: dict[str, Any] | None,
         token_budget: TokenBudget,
         allowed: int,
+        project_path: str,
     ) -> DockerfileResult:
         meta_schema = schema_dockerfile_generation_metadata()
         max_meta_out = min(6144, _generation_max_output_tokens(allowed, enriched_fp))
 
-        prompt_meta = build_generation_metadata_prompt(enriched_fp, template, plan=plan)
-        resp_meta = await self.client.generate_json(
-            prompt=prompt_meta,
-            system_instruction=MASTER_DOCKERFILE_METADATA_SYSTEM_PROMPT,
-            model=settings.gemini_flash_model,
-            temperature=0.1,
-            max_output_tokens=max_meta_out,
-            response_schema=meta_schema,
-            io_log_label="dockerfile_generation_metadata",
+        meta_dig = enriched_fingerprint_cache_digest(enriched_fp)
+        mkey = metadata_cache_key(meta_dig)
+        cached_meta = await cache_get_json(mkey)
+        metadata_from_cache = (
+            isinstance(cached_meta, dict)
+            and str(cached_meta.get("dockerignore", "")).strip()
+            and str(cached_meta.get("analysis_summary", "")).strip()
         )
-        token_budget.record("generation_metadata", resp_meta.total_tokens)
 
-        prm = parse_model_json_from_ai_response(resp_meta.text, resp_meta.parsed_dict)
-        meta_data = prm.data
+        resp_meta: AIResponse | None = None
         repair_meta: AIResponse | None = None
+        prm: ParseResult | None = None
         prm2: ParseResult | None = None
-        if meta_data is None:
-            logger.error("Generation metadata JSON parse failed: %s", prm.error)
-            hint_m = (
-                "analysis_summary (string), dockerignore (string), warnings (array of strings), "
-                "exposed_ports (array of integers), optional estimated_image_size_mb (integer), "
-                "optional requires_env_vars (array of strings)"
-            )
-            repaired_m, repair_meta = await self._repair_json_object(
-                broken_text=resp_meta.text,
-                key_hint=hint_m,
-                token_budget=token_budget,
-                spend_step="generation",
-                response_schema=meta_schema,
-                io_label="dockerfile_generation_metadata",
-                parsed_dict=resp_meta.parsed_dict,
-            )
-            if repaired_m is not None:
-                if repair_meta is not None:
-                    token_budget.record("generation_metadata", repair_meta.total_tokens)
-                    prm2 = parse_model_json_from_ai_response(
-                        repair_meta.text, repair_meta.parsed_dict
-                    )
-                else:
-                    prm2 = ParseResult(repaired_m, "local_json_recovery", resp_meta.text, None)
-                meta_data = repaired_m
+        meta_data: dict[str, Any] | None = None
 
-        if meta_data is None:
-            hint_u = _user_hint_for_json_failures(prm, prm2, enriched_fp)
-            repair_err = f"; repair_parse={prm2.error!s}" if prm2 is not None else ""
-            raise RuntimeError(
-                "AI Dockerfile metadata phase returned no valid JSON. "
-                f"parse_error={prm.error!s}{repair_err}"
-                + (f" | {hint_u}" if hint_u else "")
+        if metadata_from_cache:
+            meta_data = dict(cached_meta)  # type: ignore[arg-type]
+            prm = ParseResult(meta_data, "redis_cache_hit", "", None)
+            logger.info("Dockerfile metadata cache hit key=%s", meta_dig[:24])
+        else:
+            prompt_meta = build_generation_metadata_prompt(
+                enriched_fp, template, plan=plan, project_path=project_path,
             )
+            resp_meta = await self.client.generate_json(
+                prompt=prompt_meta,
+                system_instruction=MASTER_DOCKERFILE_METADATA_SYSTEM_PROMPT,
+                model=settings.gemini_flash_model,
+                temperature=0.1,
+                max_output_tokens=max_meta_out,
+                response_schema=meta_schema,
+                io_log_label="dockerfile_generation_metadata",
+            )
+            token_budget.record("generation_metadata", resp_meta.total_tokens)
+
+            prm = parse_model_json_from_ai_response(resp_meta.text, resp_meta.parsed_dict)
+            meta_data = prm.data
+            if meta_data is None:
+                logger.error("Generation metadata JSON parse failed: %s", prm.error)
+                hint_m = (
+                    "analysis_summary (string), dockerignore (string), warnings (array of strings), "
+                    "exposed_ports (array of integers), optional estimated_image_size_mb (integer), "
+                    "optional requires_env_vars (array of strings)"
+                )
+                repaired_m, repair_meta = await self._repair_json_object(
+                    broken_text=resp_meta.text,
+                    key_hint=hint_m,
+                    token_budget=token_budget,
+                    spend_step="generation",
+                    response_schema=meta_schema,
+                    io_label="dockerfile_generation_metadata",
+                    parsed_dict=resp_meta.parsed_dict,
+                )
+                if repaired_m is not None:
+                    if repair_meta is not None:
+                        token_budget.record("generation_metadata", repair_meta.total_tokens)
+                        prm2 = parse_model_json_from_ai_response(
+                            repair_meta.text, repair_meta.parsed_dict
+                        )
+                    else:
+                        prm2 = ParseResult(repaired_m, "local_json_recovery", resp_meta.text, None)
+                    meta_data = repaired_m
+
+            if meta_data is None:
+                hint_u = _user_hint_for_json_failures(prm, prm2, enriched_fp)
+                repair_err = f"; repair_parse={prm2.error!s}" if prm2 is not None else ""
+                raise RuntimeError(
+                    "AI Dockerfile metadata phase returned no valid JSON. "
+                    f"parse_error={prm.error!s}{repair_err}"
+                    + (f" | {hint_u}" if hint_u else "")
+                )
+            cache_payload = {
+                k: meta_data.get(k)
+                for k in (
+                    "analysis_summary",
+                    "dockerignore",
+                    "warnings",
+                    "exposed_ports",
+                    "estimated_image_size_mb",
+                    "requires_env_vars",
+                )
+                if k in meta_data
+            }
+            await cache_set_json(mkey, cache_payload)
+
+        assert meta_data is not None and prm is not None
 
         can2, allowed2 = token_budget.can_spend("generation", minimum=500)
         if not can2:
@@ -484,11 +567,14 @@ class DockerfileGenerator:
             )
 
         max_body = _generation_max_output_tokens(allowed2, enriched_fp)
-        prompt_body = build_dockerfile_body_only_prompt(enriched_fp, template, plan, meta_data)
+        prompt_body = build_dockerfile_body_only_prompt(
+            enriched_fp, template, plan, meta_data, project_path=project_path,
+        )
+        body_model = select_generation_body_model(enriched_fp)
         resp_body = await self.client.generate(
             prompt=prompt_body,
             system_instruction=DOCKERFILE_BODY_ONLY_SYSTEM_PROMPT,
-            model=settings.gemini_pro_model,
+            model=body_model,
             temperature=0.1,
             max_output_tokens=max_body,
             response_mime_type="text/plain",
@@ -519,35 +605,50 @@ class DockerfileGenerator:
             )
 
         full: dict[str, Any] = {**meta_data, "dockerfile": dockerfile}
-        total_tok = (
-            resp_meta.total_tokens
-            + (repair_meta.total_tokens if repair_meta else 0)
-            + resp_body.total_tokens
-        )
+        meta_tokens = 0
+        if resp_meta is not None:
+            meta_tokens = resp_meta.total_tokens + (repair_meta.total_tokens if repair_meta else 0)
+        total_tok = meta_tokens + resp_body.total_tokens
         result = self._result_from_generation_dict(full, total_tok)
-        meta_io = _io_meta(
-            interaction="generation",
-            parse_ok=True,
-            parse_first=prm,
-            parse_second=prm2,
-            response=resp_meta,
-            response2=repair_meta,
-        )
-        meta_io["two_phase"] = True
-        meta_io["phase2_model"] = resp_body.model
-        meta_io["phase2_tokens"] = resp_body.total_tokens
-        meta_io["metadata_total_tokens"] = resp_meta.total_tokens + (
-            repair_meta.total_tokens if repair_meta else 0
-        )
-        meta_io["metadata_prompt_tokens"] = resp_meta.prompt_tokens + (
-            repair_meta.prompt_tokens if repair_meta else 0
-        )
-        meta_io["metadata_completion_tokens"] = resp_meta.completion_tokens + (
-            repair_meta.completion_tokens if repair_meta else 0
-        )
-        meta_io["body_prompt_tokens"] = resp_body.prompt_tokens
-        meta_io["body_completion_tokens"] = resp_body.completion_tokens
-        meta_io["body_total_tokens"] = resp_body.total_tokens
+        if metadata_from_cache:
+            meta_io: dict[str, Any] = {
+                "interaction": "generation",
+                "parse_ok": True,
+                "parse_first_strategy": "redis_cache_hit",
+                "two_phase": True,
+                "metadata_from_cache": True,
+                "phase2_model": resp_body.model,
+                "phase2_tokens": resp_body.total_tokens,
+                "metadata_total_tokens": 0,
+                "body_prompt_tokens": resp_body.prompt_tokens,
+                "body_completion_tokens": resp_body.completion_tokens,
+                "body_total_tokens": resp_body.total_tokens,
+            }
+        else:
+            assert resp_meta is not None
+            meta_io = _io_meta(
+                interaction="generation",
+                parse_ok=True,
+                parse_first=prm,
+                parse_second=prm2,
+                response=resp_meta,
+                response2=repair_meta,
+            )
+            meta_io["two_phase"] = True
+            meta_io["phase2_model"] = resp_body.model
+            meta_io["phase2_tokens"] = resp_body.total_tokens
+            meta_io["metadata_total_tokens"] = resp_meta.total_tokens + (
+                repair_meta.total_tokens if repair_meta else 0
+            )
+            meta_io["metadata_prompt_tokens"] = resp_meta.prompt_tokens + (
+                repair_meta.prompt_tokens if repair_meta else 0
+            )
+            meta_io["metadata_completion_tokens"] = resp_meta.completion_tokens + (
+                repair_meta.completion_tokens if repair_meta else 0
+            )
+            meta_io["body_prompt_tokens"] = resp_body.prompt_tokens
+            meta_io["body_completion_tokens"] = resp_body.completion_tokens
+            meta_io["body_total_tokens"] = resp_body.total_tokens
         result.io_meta = meta_io
         _warn_if_sparse_comments(result.dockerfile)
         return result
@@ -560,8 +661,11 @@ class DockerfileGenerator:
         plan: dict[str, Any] | None,
         token_budget: TokenBudget,
         allowed: int,
+        project_path: str,
     ) -> DockerfileResult:
-        prompt = build_generation_prompt(enriched_fp, template, plan=plan)
+        prompt = build_generation_prompt(
+            enriched_fp, template, plan=plan, project_path=project_path,
+        )
         model = select_generation_model(enriched_fp)
         schema = schema_dockerfile_generation()
         max_out = _generation_max_output_tokens(allowed, enriched_fp)
@@ -773,17 +877,45 @@ class DockerfileGenerator:
         fingerprint: dict | None,
         attempt_number: int,
         token_budget: TokenBudget,
+        *,
+        project_path: str | None = None,
     ) -> FixResult:
         step = "simple_fix" if attempt_number <= 2 else "complex_fix"
         can_spend, allowed = token_budget.can_spend("fix_attempt")
         if not can_spend:
             raise RuntimeError("Token budget exhausted for fix step")
 
+        if (
+            project_path
+            and fingerprint
+            and attempt_number >= settings.ai_early_stop_template_after_build_attempt
+        ):
+            tpl = render_template_dockerfile(project_path, fingerprint)
+            if tpl and _dockerfile_is_plausible(tpl):
+                ign = (
+                    ".git\n__pycache__\n*.pyc\n.pytest_cache\n.venv\nvenv\n"
+                    "node_modules\ndist\n.next\n.env\n*.log\n"
+                )
+                return FixResult(
+                    dockerfile=tpl,
+                    dockerignore=ign,
+                    analysis_summary="Early-stop: replaced Dockerfile with deterministic template.",
+                    changes_made=["early_stop_deterministic_template"],
+                    warnings=["ai_early_stop_template"],
+                    tokens_used=0,
+                    io_meta={
+                        "interaction": f"fix_attempt_{attempt_number}",
+                        "early_stop_template": True,
+                        "parse_ok": True,
+                    },
+                )
+
         prompt = build_fix_prompt(
             dockerfile=dockerfile,
             error_context=error_context[:10000],
             fingerprint=fingerprint,
             attempt_number=attempt_number,
+            project_path=project_path,
         )
         model = select_model_for_step(step)
         schema = schema_dockerfile_fix()

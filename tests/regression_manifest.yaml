@@ -1,0 +1,20 @@
+# Synthetic repos for analyze + lint + prebuild (no Gemini). Paths relative to tests/fixtures.
+cases:
+  - id: python_fastapi
+    path: python_fastapi
+  - id: python_flask
+    path: python_flask
+  - id: node_nextjs
+    path: node_nextjs
+  - id: go_fiber
+    path: go_fiber
+  - id: java_spring
+    path: java_spring
+  - id: php_laravel
+    path: php_laravel
+  - id: ruby_rails
+    path: ruby_rails
+  - id: rust_actix
+    path: rust_actix
+  - id: monorepo_fullstack
+    path: monorepo_fullstack

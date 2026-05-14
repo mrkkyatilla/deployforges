@@ -124,3 +124,13 @@ class ProjectSummary(BaseModel):
 class ProjectListResponse(BaseModel):
     data: list[ProjectSummary]
     pagination: dict
+
+
+class ComposeRiskPreviewResponse(BaseModel):
+    """Heuristic compose/deployment risk from stored fingerprint (no compose generation)."""
+
+    project_id: UUID
+    risk_level: str
+    score: int
+    reasons: list[str]
+    policy_notes: list[str] = Field(default_factory=list)

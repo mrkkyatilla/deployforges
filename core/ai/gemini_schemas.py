@@ -231,3 +231,45 @@ def schema_compose_generation() -> types.Schema:
         },
         required=["compose_yml", "warnings"],
     )
+
+
+def schema_compose_service_patches() -> types.Schema:
+    """Small JSON: per-service overrides merged into template compose (not full YAML)."""
+    str_item = types.Schema(type=_T.STRING)
+    env_pair = types.Schema(
+        type=_T.OBJECT,
+        properties={
+            "name": types.Schema(type=_T.STRING),
+            "value": types.Schema(type=_T.STRING),
+        },
+        required=["name", "value"],
+    )
+    patch_item = types.Schema(
+        type=_T.OBJECT,
+        properties={
+            "service": types.Schema(type=_T.STRING, description="Service name matching fingerprint"),
+            "environment": types.Schema(
+                type=_T.ARRAY,
+                items=env_pair,
+                description="Extra env vars to merge into the service",
+            ),
+            "ports": types.Schema(
+                type=_T.ARRAY,
+                items=str_item,
+                description='Port mappings like "8080:8080"',
+            ),
+        },
+        required=["service"],
+    )
+    return types.Schema(
+        type=_T.OBJECT,
+        properties={
+            "patches": types.Schema(
+                type=_T.ARRAY,
+                items=patch_item,
+                description="Overrides merged into template compose services",
+            ),
+            "warnings": types.Schema(type=_T.ARRAY, items=str_item),
+        },
+        required=["patches", "warnings"],
+    )

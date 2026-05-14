@@ -116,7 +116,11 @@ class PreBuildValidator:
         )
         if not has_cmd_or_entrypoint:
             results.append(
-                CheckResult("dockerfile_syntax", False, "No CMD or ENTRYPOINT — container may not start")
+                CheckResult(
+                    "dockerfile_syntax",
+                    settings.prebuild_require_cmd_or_entrypoint_error,
+                    "No CMD or ENTRYPOINT — container may not start",
+                )
             )
 
         for i, ln in enumerate(lines, 1):
