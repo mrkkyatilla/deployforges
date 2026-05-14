@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 import logging
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -15,7 +17,12 @@ from core.ai.gemini_schemas import (
     schema_dockerfile_generation_metadata,
     schema_dockerfile_plan,
 )
-from core.ai.json_response import ParseResult, parse_model_json_from_ai_response
+from core.ai.json_response import (
+    ParseResult,
+    mask_secrets,
+    parse_model_json_from_ai_response,
+    truncate_for_log,
+)
 from core.ai.prompts.dockerfile import (
     build_critic_prompt,
     build_dockerfile_body_only_prompt,
@@ -89,11 +96,65 @@ def _coerce_str_list(val: Any) -> list[str]:
     return [str(x) for x in val if x is not None]
 
 
+_FROM_INSTRUCTION = re.compile(r"(?ms)^\s*FROM\s+\S", re.IGNORECASE)
+
+
 def _dockerfile_is_plausible(content: str) -> bool:
     c = (content or "").lstrip()
     if len(c) < 8:
         return False
-    return c.upper().startswith("FROM ")
+    return bool(_FROM_INSTRUCTION.match(c))
+
+
+def _strip_markdown_fence_generic(text: str) -> str:
+    """If the model wrapped output in ``` fences, extract inner body (any language tag)."""
+    t = text.strip()
+    pos = t.find("```")
+    if pos < 0:
+        return t
+    after = t[pos + 3 :].lstrip()
+    nl = after.find("\n")
+    if nl >= 0:
+        first = after[:nl].strip().lower()
+        rest = after[nl + 1 :]
+        if first and first not in ("", "```") and not first.startswith("```"):
+            after = rest
+    close = after.rfind("```")
+    if close >= 0:
+        after = after[:close]
+    return after.strip()
+
+
+def _try_json_dockerfile_field(text: str) -> str | None:
+    """When ``text/plain`` still returns a JSON object with a ``dockerfile`` string."""
+    s = text.strip()
+    if not s.startswith("{"):
+        return None
+    try:
+        data = json.loads(s)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(data, dict):
+        return None
+    df = data.get("dockerfile")
+    if isinstance(df, str) and df.strip():
+        return df.strip()
+    return None
+
+
+def _normalize_plain_dockerfile_response(raw: str) -> str:
+    """Strip BOM, markdown fences, accidental JSON wrapper, and preamble before the first FROM line."""
+    t = (raw or "").replace("\ufeff", "").strip()
+    if not t:
+        return ""
+    t = _strip_markdown_fence_generic(t)
+    inner = _try_json_dockerfile_field(t)
+    if inner:
+        t = _strip_markdown_fence_generic(inner)
+    m = _FROM_INSTRUCTION.search(t)
+    if m:
+        return t[m.start() :].strip()
+    return t.strip()
 
 
 def _plan_is_usable(plan: dict[str, Any] | None) -> bool:
@@ -137,22 +198,6 @@ def _critical_files_max_tokens(allowed: int, fingerprint: dict) -> int:
     if fingerprint_is_high_complexity(fingerprint):
         return min(5000, allowed // 2)
     return min(8000, allowed // 2)
-
-
-def _strip_plain_dockerfile_body(text: str) -> str:
-    t = (text or "").strip()
-    if not t:
-        return ""
-    if "```" in t:
-        start = t.find("```")
-        if start >= 0:
-            after = t[start + 3 :].lstrip()
-            if after.lower().startswith("dockerfile"):
-                after = after[len("dockerfile") :].lstrip()
-            close = after.rfind("```")
-            if close >= 0:
-                return after[:close].strip()
-    return t
 
 
 def _user_hint_for_json_failures(
@@ -452,8 +497,21 @@ class DockerfileGenerator:
         )
         token_budget.record("generation_body", resp_body.total_tokens)
 
-        dockerfile = _strip_plain_dockerfile_body(resp_body.text)
+        raw_body = resp_body.text or ""
+        dockerfile = _normalize_plain_dockerfile_response(raw_body)
         if not _dockerfile_is_plausible(dockerfile):
+            excerpt_n = max(400, min(2400, int(settings.ai_debug_max_chars)))
+            excerpt = truncate_for_log(
+                mask_secrets(raw_body, settings.secret_patterns),
+                excerpt_n,
+            )
+            logger.warning(
+                "Dockerfile body step failed plausible check raw_chars=%d normalized_chars=%d model=%s excerpt=%s",
+                len(raw_body),
+                len(dockerfile),
+                resp_body.model,
+                excerpt,
+            )
             raise RuntimeError(
                 "AI Dockerfile body phase returned empty or non-Dockerfile plain text. "
                 "user_hint: TR: Dockerfile metni çıkmadı; tekrar deneyin. "

@@ -125,5 +125,5 @@ DOCKERFILE_BODY_ONLY_SYSTEM_PROMPT = """\
 You are a Senior DevOps Engineer. Output **only** the Dockerfile source: first non-empty line must be `FROM ` \
 with a specific tag (not :latest). Use multi-stage builds, non-root USER, HEALTHCHECK, layer caching, and \
 short `#` comments before each major stage. Do not output JSON, markdown fences, or explanations — Dockerfile \
-text only.
+text only. No introductory sentences or headings before FROM.
 """
