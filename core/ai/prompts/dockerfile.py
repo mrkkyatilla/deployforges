@@ -38,6 +38,54 @@ def _append_python_matrix(project_path: str | None, fingerprint: dict | None, se
     sections.append(format_matrix_for_prompt(project_path, fingerprint))
 
 
+def _fingerprint_uses_pyproject_packaging(fingerprint: dict | None) -> bool:
+    if not fingerprint:
+        return False
+    if (fingerprint.get("language") or {}).get("primary") != "python":
+        return False
+    deps = fingerprint.get("dependencies") or {}
+    if isinstance(deps, dict):
+        mgr = str(deps.get("manager") or "").lower()
+        if mgr in ("pyproject", "pipenv"):
+            return True
+    ft = fingerprint.get("file_tree") or {}
+    nodes = ft.get("nodes") or []
+    for n in nodes:
+        if not isinstance(n, dict):
+            continue
+        p = (n.get("path") or "").replace("\\", "/").lower()
+        if p == "pyproject.toml" or p.endswith("/pyproject.toml"):
+            return True
+    return False
+
+
+def _append_pyproject_metadata_copy_rule(fingerprint: dict | None, sections: list[str]) -> None:
+    """PEP 517 / setuptools: readme files must sit under the repo root WORKDIR in the final image."""
+    if not _fingerprint_uses_pyproject_packaging(fingerprint):
+        return
+    sections.append(
+        "\n## Python pyproject packaging (mandatory when pyproject.toml / uv / poetry is used)\n"
+        "- Setuptools reads paths such as **README.md** and **LICENSE** relative to the project root "
+        "declared in ``pyproject.toml``. In the **final** image stage, after the first ``WORKDIR`` "
+        "that represents the repo root (often ``/app``), ensure those files exist there using **absolute** "
+        "destinations, e.g. ``COPY README.md /app/README.md`` and ``COPY LICENSE /app/LICENSE``.\n"
+        "- If you ``WORKDIR`` into a subdirectory (e.g. ``/app/examples/tutorial``) for runtime, **do not** "
+        "copy ``README.md`` only to ``./`` in that subdirectory unless the package metadata lives there; "
+        "prefer copying metadata files to the **repo root** path used at install time.\n"
+        "- When the build stage already has ``pyproject.toml`` / lockfiles, the runtime stage must still "
+        "include any files referenced by ``[project]`` readme / license fields if they are not part of "
+        "``COPY . .`` into the root.\n"
+    )
+
+
+def _append_playbook_hints(hints: list[str] | None, sections: list[str]) -> None:
+    if not hints:
+        return
+    sections.append("\n## Playbook hints (high-signal, curated)\n")
+    for i, h in enumerate(hints[:5], 1):
+        sections.append(f"{i}. {h}\n")
+
+
 def build_plan_prompt(fingerprint: dict, template: str | None = None) -> str:
     sections = ["## Project fingerprint\n"]
     sections.append("```json")
@@ -60,6 +108,7 @@ def build_generation_prompt(
     plan: dict[str, Any] | None = None,
     *,
     project_path: str | None = None,
+    playbook_hints: list[str] | None = None,
 ) -> str:
     sections = ["## Project Analysis Result\n"]
     sections.append("```json")
@@ -80,6 +129,8 @@ def build_generation_prompt(
         sections.append(_skeleton_contract_section(template))
 
     _append_python_matrix(project_path, fingerprint, sections)
+    _append_pyproject_metadata_copy_rule(fingerprint, sections)
+    _append_playbook_hints(playbook_hints, sections)
 
     sections.append("## Task\n")
     sections.append(
@@ -103,6 +154,7 @@ def build_generation_metadata_prompt(
     plan: dict[str, Any] | None = None,
     *,
     project_path: str | None = None,
+    playbook_hints: list[str] | None = None,
 ) -> str:
     """Phase 1 of two-phase generation: JSON without embedded Dockerfile string."""
     sections = ["## Project Analysis Result\n"]
@@ -124,6 +176,8 @@ def build_generation_metadata_prompt(
         sections.append(_skeleton_contract_section(template))
 
     _append_python_matrix(project_path, fingerprint, sections)
+    _append_pyproject_metadata_copy_rule(fingerprint, sections)
+    _append_playbook_hints(playbook_hints, sections)
 
     sections.append("## Task\n")
     sections.append(
@@ -142,6 +196,7 @@ def build_dockerfile_body_only_prompt(
     metadata: dict[str, Any],
     *,
     project_path: str | None = None,
+    playbook_hints: list[str] | None = None,
 ) -> str:
     """Phase 2: plain Dockerfile only, guided by fingerprint, plan, template, and phase-1 metadata."""
     sections = ["## Project Analysis Result\n", "```json\n"]
@@ -160,6 +215,8 @@ def build_dockerfile_body_only_prompt(
         sections.append(_skeleton_contract_section(template))
 
     _append_python_matrix(project_path, fingerprint, sections)
+    _append_pyproject_metadata_copy_rule(fingerprint, sections)
+    _append_playbook_hints(playbook_hints, sections)
 
     sections.append("## Phase-1 metadata (must align)\n```json\n")
     sections.append(json.dumps(metadata, indent=2, default=str))

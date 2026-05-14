@@ -1,0 +1,19 @@
+schema_version: 1
+redis_prefix: "df:playbook:v1"
+
+# Curated static hints injected when ``when`` matches fingerprint (no Redis required).
+static_sets:
+  - id: pyproject_python
+    when:
+      language_primary: python
+      dependencies_manager_in: [pyproject, pipenv]
+    hints:
+      - "If the final stage uses ``WORKDIR`` into a subdirectory, still place README.md / LICENSE under the repo root (first app WORKDIR, often /app) using absolute COPY destinations so setuptools can find them."
+
+# Optional Redis reinforcement: key suffix = error pattern ``name`` from classifier.
+redis_bootstrap_error_names:
+  - setuptools_description_file_missing
+
+error_hints:
+  setuptools_description_file_missing:
+    text: "Copy README.md (and LICENSE if referenced) to the repo root in the final stage, e.g. ``COPY README.md /app/README.md`` — not only ``./`` under a nested WORKDIR."

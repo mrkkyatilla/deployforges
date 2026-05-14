@@ -13,6 +13,7 @@ from api.config import settings
 from core.ai.dockerfile_generator import DockerfileGenerator
 from core.ai.dockerfile_linter import DockerfileLinter
 from core.ai.dockerfile_pipeline_policy import resolve_dockerfile_pipeline_policy
+from core.ai.playbook_hints import collect_playbook_hints_for_prompt
 from core.ai.gemini_client import GeminiClient
 from core.ai.token_manager import TokenBudget
 from core.analysis.engine import AnalysisEngine
@@ -122,11 +123,13 @@ async def run_pipeline(project_id: UUID) -> None:
         fp = dict(fp_dict)
         fp["confidence"] = float(fingerprint.confidence)
         pipeline_policy = resolve_dockerfile_pipeline_policy(fp, settings)
+        playbook_hints = await collect_playbook_hints_for_prompt(fp_dict)
         gen_result = await generator.generate(
             fingerprint=fp_dict,
             project_path=str(workspace),
             token_budget=token_budget,
             pipeline_policy=pipeline_policy,
+            playbook_hints=playbook_hints,
         )
 
         await emit_event(project_id, "step_complete", {

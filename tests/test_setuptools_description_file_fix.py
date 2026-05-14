@@ -29,16 +29,32 @@ def test_insert_copy_readme_before_user_final_stage() -> None:
         'CMD ["gunicorn"]\n'
     )
     out = orch._insert_copy_for_description_file(df, "README.md")
-    assert "COPY README.md ./" in out
+    assert "COPY README.md /app/README.md" in out
     assert out.index("COPY README.md") < out.index("USER app")
 
 
-def test_insert_skips_if_already_present() -> None:
+def test_rewrites_readme_copy_after_nested_workdir() -> None:
+    """README must live next to pyproject (first WORKDIR), not under a later WORKDIR."""
     df = (
         "FROM python:3.10-slim\n"
         "WORKDIR /app\n"
+        "COPY --chown=app:app . .\n"
+        "WORKDIR /app/examples/tutorial\n"
         "COPY README.md ./\n"
+        "USER app\n"
+        "CMD gunicorn\n"
+    )
+    out = orch._insert_copy_for_description_file(df, "README.md")
+    assert "COPY README.md /app/README.md" in out
+    assert "COPY README.md ./" not in out
+
+
+def test_insert_skips_if_already_present_at_repo_root() -> None:
+    df = (
+        "FROM python:3.10-slim\n"
+        "WORKDIR /app\n"
+        "COPY README.md /app/README.md\n"
         "USER app\n"
     )
     out = orch._insert_copy_for_description_file(df, "README.md")
-    assert out.count("COPY README.md ./") == 1
+    assert out.count("COPY README.md /app/README.md") == 1

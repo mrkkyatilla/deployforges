@@ -412,6 +412,7 @@ class DockerfileGenerator:
         token_budget: TokenBudget,
         *,
         pipeline_policy: DockerfilePipelinePolicy | None = None,
+        playbook_hints: list[str] | None = None,
     ) -> DockerfileResult:
         can_spend, allowed = token_budget.can_spend("generation")
         if not can_spend:
@@ -466,6 +467,7 @@ class DockerfileGenerator:
                 allowed=allowed,
                 project_path=project_path,
                 policy=policy,
+                playbook_hints=playbook_hints,
             )
         return await self._generate_single_json_dockerfile(
             enriched_fp=enriched_fp,
@@ -475,6 +477,7 @@ class DockerfileGenerator:
             allowed=allowed,
             project_path=project_path,
             policy=policy,
+            playbook_hints=playbook_hints,
         )
 
     async def _generate_two_phase_dockerfile(
@@ -487,6 +490,7 @@ class DockerfileGenerator:
         allowed: int,
         project_path: str,
         policy: DockerfilePipelinePolicy,
+        playbook_hints: list[str] | None = None,
     ) -> DockerfileResult:
         meta_schema = schema_dockerfile_generation_metadata()
         max_meta_out = min(6144, _generation_max_output_tokens(allowed, enriched_fp))
@@ -513,6 +517,7 @@ class DockerfileGenerator:
         else:
             prompt_meta = build_generation_metadata_prompt(
                 enriched_fp, template, plan=plan, project_path=project_path,
+                playbook_hints=playbook_hints,
             )
             resp_meta = await self.client.generate_json(
                 prompt=prompt_meta,
@@ -587,6 +592,7 @@ class DockerfileGenerator:
         max_body = _generation_max_output_tokens(allowed2, enriched_fp)
         prompt_body = build_dockerfile_body_only_prompt(
             enriched_fp, template, plan, meta_data, project_path=project_path,
+            playbook_hints=playbook_hints,
         )
         body_model = select_generation_body_model(enriched_fp)
         resp_body = await self.client.generate(
@@ -682,9 +688,11 @@ class DockerfileGenerator:
         allowed: int,
         project_path: str,
         policy: DockerfilePipelinePolicy,
+        playbook_hints: list[str] | None = None,
     ) -> DockerfileResult:
         prompt = build_generation_prompt(
             enriched_fp, template, plan=plan, project_path=project_path,
+            playbook_hints=playbook_hints,
         )
         model = select_generation_model(enriched_fp)
         schema = schema_dockerfile_generation()

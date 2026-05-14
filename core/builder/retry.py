@@ -10,6 +10,8 @@ import redis.asyncio as redis
 
 from api.config import settings
 from core.ai.dockerfile_generator import DockerfileGenerator
+from core.ai.dockerfile_pipeline_policy import resolve_dockerfile_pipeline_policy
+from core.ai.playbook_hints import collect_playbook_hints_for_prompt
 from core.ai.token_manager import TokenBudget
 from core.builder.sandbox import BuildResult, KanikoBuildSandbox, DockerBuildSandbox
 from core.builder.validator import CloudRunValidator, DeploymentResult
@@ -330,10 +332,14 @@ class BuildRetryManager:
         attempt: int,
         budget: TokenBudget,
     ) -> tuple[str, str]:
+        pipeline_policy = resolve_dockerfile_pipeline_policy(fingerprint, settings)
+        playbook_hints = await collect_playbook_hints_for_prompt(fingerprint)
         result = await self.generator.generate(
             fingerprint=fingerprint,
             project_path=fingerprint.get("project_path", "."),
             token_budget=budget,
+            pipeline_policy=pipeline_policy,
+            playbook_hints=playbook_hints,
         )
         return result.dockerfile or _CONSERVATIVE_TEMPLATE, result.dockerignore or dockerignore
 

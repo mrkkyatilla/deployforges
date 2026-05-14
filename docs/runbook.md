@@ -56,3 +56,25 @@ cd deployforges && pytest tests/test_regression_deterministic.py -m regression
 ```
 
 CI runs this marker on a schedule (see `.github/workflows/regression.yml`).
+
+## Build ``error_analysis`` (schema v1)
+
+Each ``Build`` row stores JSON in ``error_analysis`` (also exposed on ``GET .../builds`` as ``error_analysis`` on each item). Version **1** uses:
+
+| Field | Meaning |
+|-------|---------|
+| ``schema_version`` | Always ``"1"``. |
+| ``type`` / ``summary`` | First error name and a short joined summary (backwards compatible with older clients). |
+| ``classified`` | List of ``{ name, fix_strategy, auto_fixable, error_type? }`` from the classifier. |
+| ``fixes_applied`` | Optional string list (e.g. ``strategy:add_copy``) after deterministic auto-fixes. |
+| ``pipeline_policy`` | Snapshot: ``tier``, ``mode``, ``signals`` when available. |
+| ``deploy_error_excerpt`` | Optional short log excerpt. |
+| ``outcome`` | On successful end-to-end runs the latest successful build row may be updated to ``outcome: success`` (with ``pipeline_policy`` preserved when present). |
+
+## Playbook hints (YAML + Redis)
+
+| Variable | Default | Meaning |
+|----------|---------|---------|
+| ``DF_AI_PLAYBOOK_HINTS_ENABLED`` | true | Master switch for injecting curated hints into Dockerfile generation prompts. |
+| ``DF_AI_PLAYBOOK_HINT_TTL_SECONDS`` | 604800 | Redis TTL for reinforced keys; **0** skips Redis read/write (YAML-only hints). |
+| ``DF_AI_PLAYBOOK_RAG_ENABLED`` | false | **Reserved** — vector/RAG playbook retrieval is not implemented; keep false. |

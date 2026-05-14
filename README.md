@@ -149,6 +149,9 @@ Uses `curl` without `-f`, handles `429`, and avoids `set -u` issues with an empt
 | `DF_AI_GENERATION_USE_FLASH_FOR_SIMPLE` | No | When true, non–high-complexity fingerprints use Flash for **legacy** single-shot JSON generation only. |
 | `DF_AI_JSON_REPAIR_SECOND_ATTEMPT_ENABLED` | No | When true (default), JSON repair retries once with a tail-focused Flash prompt. |
 | `DF_AI_DOCKERFILE_PIPELINE_MODE` | No | `legacy` (default): honor `DF_AI_DOCKERFILE_PLAN_*` and `DF_AI_DOCKERFILE_CRITIC_REFINE_ENABLED` globally. `auto`: pick **minimal** / **standard** / **thorough** from the fingerprint (confidence, monorepo, service count, lockfile, multi-surface repo tree) to toggle plan, plan JSON repair, critic vs critic+refine, and second JSON repair per project. |
+| `DF_AI_PLAYBOOK_HINTS_ENABLED` | No | When true (default), Dockerfile prompts may include curated **playbook hints** from YAML plus optional Redis reinforcement. |
+| `DF_AI_PLAYBOOK_HINT_TTL_SECONDS` | No | TTL for Redis playbook keys (default 604800 = 7 days). **0** disables Redis read/write for playbook hints; static YAML hints still apply. |
+| `DF_AI_PLAYBOOK_RAG_ENABLED` | No | **Reserved** (default false). Future optional vector retrieval for playbook snippets — not implemented. |
 | `DF_GEMINI_FILES_API_PROMPT_TOKEN_THRESHOLD` | No | Reserved: future Files API for huge prompts. **0** = disabled (no runtime behavior yet). |
 | `DF_AI_DOCKERFILE_CRITIC_REFINE_ENABLED` | No | When true, runs critic + optional one-shot **refine** after generation (extra tokens). |
 | `DF_REPORTER_LLM_ENABLED` | No | When true, ``POST /api/v1/admin/reporter/run`` may call Gemini on **aggregate** metrics only. |
@@ -172,6 +175,10 @@ Query params for reporter: ``period_days`` (1–90), ``include_llm`` (default fa
 Monorepos and very large trees stress inline JSON (embedded Dockerfile strings can hit **MAX_TOKENS** or break parsing). DeployForge defaults to **two-phase** generation: a compact metadata JSON step, then a **plain-text** Dockerfile body (`DF_AI_DOCKERFILE_TWO_PHASE_ENABLED`, default on). Tighter **critical-file** budgets apply when the fingerprint looks high-complexity (monorepo, multi-deps, many services). Pipeline **token_breakdown** then lists ``generation_metadata`` (Flash) and ``generation_body`` (Pro) instead of a single ``generation`` row; in-app cost estimates use the matching model per key.
 
 `DF_GEMINI_FILES_API_PROMPT_TOKEN_THRESHOLD` is a **reserved** hook: at **0** (default) nothing uses the Files API. A future version may upload oversized artifacts when estimated prompt tokens exceed this threshold, instead of pasting megabytes into the prompt.
+
+### Structured build errors and playbook hints
+
+Failed builds persist a versioned JSON document on each ``Build`` row in ``error_analysis`` (see [docs/runbook.md](docs/runbook.md) for field definitions). Successful pipelines update the latest successful build with a compact ``outcome: success`` marker. Curated **playbook** strings (YAML under ``core/ai/data/playbook_hints.yaml`` plus optional Redis reinforcement after successful deploys) are merged into Dockerfile generation prompts when ``DF_AI_PLAYBOOK_HINTS_ENABLED`` is true. ``DF_AI_PLAYBOOK_RAG_ENABLED`` is reserved for a future vector-retrieval path and has no effect today.
 
 ---
 

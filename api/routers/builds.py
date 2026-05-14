@@ -54,6 +54,7 @@ async def list_builds(
                 status=b.build_status,
                 error_type=b.error_analysis.get("type") if b.error_analysis else None,
                 error_summary=b.error_analysis.get("summary") if b.error_analysis else None,
+                error_analysis=dict(b.error_analysis) if b.error_analysis else None,
                 duration_seconds=b.duration_ms // 1000 if b.duration_ms else None,
                 image_size_mb=None,
                 created_at=b.created_at,

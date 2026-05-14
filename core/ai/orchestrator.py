@@ -29,6 +29,7 @@ from core.ai.dockerfile_pipeline_policy import (
     policy_from_dict,
     resolve_dockerfile_pipeline_policy,
 )
+from core.ai.playbook_hints import collect_playbook_hints_for_prompt, record_playbook_hints_on_success
 from core.ai.gemini_client import GeminiClient, is_transient_gemini_http_error
 from core.ai.pipeline_errors import TransientGeminiError
 from core.ai.gemini_json_repair import repair_model_json
@@ -51,6 +52,12 @@ from core.security.dockerfile_policy import check_dockerfile_policy
 from core.intake.archive_handler import ArchiveHandler
 from core.intake.git_handler import GitHandler
 from core.intake.security_scan import SecurityScanner
+from core.learning.build_error_analysis import (
+    build_error_analysis_v1,
+    mark_latest_success_build_analysis,
+    merge_error_analysis_fixes,
+    persist_error_analysis_for_attempt,
+)
 from db.models import AIInteraction, Build, Project
 from db.session import async_session_factory
 
@@ -158,14 +165,58 @@ def _error_to_dict(err: ClassifiedError) -> dict:
     return dataclasses.asdict(err)
 
 
-_DESCRIPTION_FILE_RE = re.compile(
-    r"Description file\s+(\S+)\s+does not exist",
-    re.IGNORECASE,
-)
+_WORKDIR_LINE_RE = re.compile(r"^\s*WORKDIR\s+(\S+)\s*", re.IGNORECASE)
+
+
+def _first_workdir_in_final_stage(lines: list[str], stage_start: int) -> str:
+    """First ``WORKDIR`` in the final image stage — setuptools metadata paths are relative to this root."""
+    for i in range(stage_start, len(lines)):
+        m = _WORKDIR_LINE_RE.match(lines[i])
+        if m:
+            return m.group(1).strip("\"'")
+    return "/app"
+
+
+def _metadata_copy_dest(root: str, rel_path: str) -> str:
+    root = root.rstrip("/")
+    return f"{root}/{rel_path}"
+
+
+def _tail_has_copy_to_dest(tail: str, rel_path: str, dest: str) -> bool:
+    """True if final stage already copies ``rel_path`` to absolute ``dest`` (allows ``--chown``)."""
+    esc_rel = re.escape(rel_path)
+    esc_dest = re.escape(dest)
+    return bool(
+        re.search(
+            rf"(?im)^\s*COPY(?:\s+--chown=[^\s]+)?\s+{esc_rel}\s+{esc_dest}\s*$",
+            tail,
+        )
+    )
+
+
+def _rewrite_wrong_relative_metadata_copy(
+    lines: list[str],
+    stage_start: int,
+    rel_path: str,
+    dest: str,
+) -> bool:
+    """Turn ``COPY readme ./`` (wrong when WORKDIR moved) into ``COPY readme /app/readme``."""
+    changed = False
+    esc = re.escape(rel_path)
+    for i in range(stage_start, len(lines)):
+        raw = lines[i]
+        stripped = raw.strip()
+        if not stripped.upper().startswith("COPY "):
+            continue
+        if re.search(rf"(?i)COPY(?:\s+--chown=[^\s]+)?\s+{esc}\s+\./?\s*$", stripped):
+            prefix = raw[: len(raw) - len(raw.lstrip())]
+            lines[i] = f"{prefix}COPY {rel_path} {dest}"
+            changed = True
+    return changed
 
 
 def _insert_copy_for_description_file(dockerfile: str, rel_path: str) -> str:
-    """Insert ``COPY`` for setuptools/pyproject metadata files into the final stage (before USER/CMD)."""
+    """Ensure setuptools/pyproject metadata files exist under the **first** stage ``WORKDIR`` (repo root)."""
     rel_path = rel_path.strip().strip("\"'")
     if not rel_path or ".." in rel_path or rel_path.startswith("/"):
         return dockerfile
@@ -174,9 +225,18 @@ def _insert_copy_for_description_file(dockerfile: str, rel_path: str) -> str:
     if not from_idxs:
         return dockerfile
     stage_start = from_idxs[-1]
+    root = _first_workdir_in_final_stage(lines, stage_start)
+    dest = _metadata_copy_dest(root, rel_path)
     tail = "\n".join(lines[stage_start:])
-    if re.search(rf"(?i)COPY\s+{re.escape(rel_path)}(\s|$)", tail):
+
+    if _tail_has_copy_to_dest(tail, rel_path, dest):
         return dockerfile
+
+    _rewrite_wrong_relative_metadata_copy(lines, stage_start, rel_path, dest)
+    tail = "\n".join(lines[stage_start:])
+    if _tail_has_copy_to_dest(tail, rel_path, dest):
+        return "\n".join(lines)
+
     insert_at: int | None = None
     for i in range(stage_start, len(lines)):
         ls = lines[i].strip()
@@ -192,10 +252,10 @@ def _insert_copy_for_description_file(dockerfile: str, rel_path: str) -> str:
     if insert_at is None:
         insert_at = len(lines)
     if "/" not in rel_path:
-        copy_line = f"COPY {rel_path} ./"
+        copy_line = f"COPY {rel_path} {dest}"
     else:
         parent = rel_path.rsplit("/", 1)[0]
-        copy_line = f"RUN mkdir -p ./{parent}\nCOPY {rel_path} ./{rel_path}"
+        copy_line = f"RUN mkdir -p {root}/{parent}\nCOPY {rel_path} {dest}"
     lines.insert(insert_at, copy_line)
     return "\n".join(lines)
 
@@ -573,11 +633,14 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
         fp["confidence"] = float(state["analysis_confidence"])
     pipeline_policy = resolve_dockerfile_pipeline_policy(fp, settings)
 
+    playbook_hints = await collect_playbook_hints_for_prompt(state["fingerprint"])
+
     gen_result: DockerfileResult = await generator.generate(
         fingerprint=state["fingerprint"],
         project_path=state["project_path"],
         token_budget=token_budget,
         pipeline_policy=pipeline_policy,
+        playbook_hints=playbook_hints,
     )
 
     gen_extra = (
@@ -1150,6 +1213,15 @@ async def classify_error_node(state: DeployForgeState) -> dict[str, Any]:
             "context": error_lines,
         }]
         await _emit(pid, "step_complete", {"step": "classify_error", "count": 1, "type": "unknown"})
+        pol_raw = state.get("dockerfile_pipeline_policy") or {}
+        await persist_error_analysis_for_attempt(
+            UUID(pid),
+            int(state.get("current_attempt", 0)),
+            build_error_analysis_v1(
+                classified_errors=generic,
+                pipeline_policy=pol_raw if isinstance(pol_raw, dict) else {},
+            ),
+        )
         return {"current_errors": generic, "error_history": generic}
 
     errors = [_error_to_dict(e) for e in classified]
@@ -1158,6 +1230,15 @@ async def classify_error_node(state: DeployForgeState) -> dict[str, Any]:
         "count": len(errors),
         "auto_fixable": all(e["auto_fixable"] for e in errors),
     })
+    pol_raw = state.get("dockerfile_pipeline_policy") or {}
+    await persist_error_analysis_for_attempt(
+        UUID(pid),
+        int(state.get("current_attempt", 0)),
+        build_error_analysis_v1(
+            classified_errors=errors,
+            pipeline_policy=pol_raw if isinstance(pol_raw, dict) else {},
+        ),
+    )
     return {"current_errors": errors, "error_history": errors}
 
 
@@ -1206,6 +1287,9 @@ async def auto_fix_build_node(state: DeployForgeState) -> dict[str, Any]:
                 dockerfile = _insert_copy_for_description_file(dockerfile, m.group(1))
 
     await _emit(pid, "step_complete", {"step": "auto_fix_build", "fixes_applied": len(errors)})
+    fixes = [f"strategy:{e.get('fix_strategy')}" for e in errors if e.get("fix_strategy")]
+    if fixes:
+        await merge_error_analysis_fixes(UUID(pid), int(state.get("current_attempt", 0)), fixes)
     return {"current_dockerfile": dockerfile, "current_errors": []}
 
 
@@ -1330,6 +1414,12 @@ async def finalize_success_node(state: DeployForgeState) -> dict[str, Any]:
                 await db.commit()
     except Exception:
         logger.exception("Failed to persist success status for %s", pid)
+
+    await mark_latest_success_build_analysis(UUID(pid))
+    await record_playbook_hints_on_success(
+        state.get("fingerprint"),
+        list(state.get("error_history") or []),
+    )
 
     await _emit(pid, "pipeline_complete", report)
     logger.info("Pipeline succeeded for project %s: tokens=%d, cost=$%.4f",
