@@ -102,6 +102,9 @@ From repo root (set `BASE` and optional `DF_TEST_API_KEY`):
 BASE=https://your-api.example.com bash scripts/vps-smoke.sh
 ```
 
+After `git pull` on the VPS, **rebuild** the worker image so intake/security fixes ship:  
+`docker compose -f deploy/docker-compose.vps.yml build --no-cache celery-worker api && docker compose -f deploy/docker-compose.vps.yml up -d`
+
 Uses `curl` without `-f`, handles `429`, and avoids `set -u` issues with an empty API key before register.
 
 ---

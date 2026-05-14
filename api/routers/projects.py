@@ -303,6 +303,7 @@ async def get_project_status(
         current_build=current_build,
         created_at=project.created_at,
         updated_at=project.updated_at,
+        error_summary=project.error_summary,
     )
 
 

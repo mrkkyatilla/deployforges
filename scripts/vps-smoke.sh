@@ -111,6 +111,17 @@ if [[ "$ST" != "success" && "$ST" != "failed" ]]; then
   die "Zaman aşımı — MAX_POLLS veya POLL_INTERVAL artırın; celery-worker loglarına bakın"
 fi
 
+if [[ "$ST" == "failed" ]]; then
+  echo ">>> Hata özeti (GET /projects/{id} → error_summary)"
+  http_request GET "${BASE}/api/v1/projects/${PID}"
+  if [[ "$__HTTP_CODE" == "2"* ]]; then
+    read_body | python3 -c "import sys,json; j=json.load(sys.stdin); es=j.get('error_summary'); print(es if es else '(error_summary boş — worker kodu güncel mi? Sunucuda: docker compose -f deploy/docker-compose.vps.yml build --no-cache celery-worker && ... up -d)')"
+    cleanup_body
+  else
+    cleanup_body
+  fi
+fi
+
 echo ">>> Sonuç"
 http_request GET "${BASE}/api/v1/projects/${PID}/result"
 if [[ "$__HTTP_CODE" != "2"* ]]; then

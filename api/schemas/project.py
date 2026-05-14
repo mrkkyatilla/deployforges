@@ -66,6 +66,8 @@ class ProjectStatusResponse(BaseModel):
     current_build: CurrentBuildSummary | None = None
     created_at: datetime
     updated_at: datetime
+    # Populated when status is failed (or after worker crash) to aid debugging without DB access.
+    error_summary: str | None = None
 
 
 class BuildStats(BaseModel):
