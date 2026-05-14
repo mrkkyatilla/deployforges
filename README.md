@@ -33,16 +33,16 @@ The server runs on `http://localhost:8000`. API docs: `http://localhost:8000/doc
 
 ### Production VPS (SSH + Cloudflare)
 
-Tek VPS için adımlar: [deploy/VPS-DEPLOY.md](deploy/VPS-DEPLOY.md).
+Self hosted VPS deployment: [deploy/VPS-DEPLOY.md](deploy/VPS-DEPLOY.md).
 
-Yerel makinede SSH anahtarın sunucuya ekliyse (`ssh root@188.132.197.229` parolasız açılıyorsa):
+if SSH key adden on local server (`ssh root@IP` running without pw):
 
 ```bash
 chmod +x deploy/push-and-boot.sh
 ./deploy/push-and-boot.sh
 ```
 
-Varsayılan hedef `root@188.132.197.229:/opt/deployforges`; alan adı `deploy/Caddyfile` içinde `deploy.wrupup.com`.
+Curent Target `root@IP:/opt/deployforges`; domain name `deploy/Caddyfile` into `deploy.wrupup.com`.
 
 ---
 
