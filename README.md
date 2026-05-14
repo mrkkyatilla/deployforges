@@ -120,6 +120,7 @@ curl http://localhost:8000/api/v1/projects/{id}/result \
 | `DF_GCP_REGION` | With GCP | Cloud Run region |
 | `DF_BUILD_BACKEND` | No | `local_docker` (default), `kaniko` (needs GCP + gcloud in worker), `skip` |
 | `DF_ADMIN_API_KEY` | No | For admin endpoints |
+| `DF_REQUIRE_EMAIL_VERIFICATION` | No | `false` (default): instant sign-up + API key. `true`: register returns 501 until verify-by-email is implemented — use before going production. |
 | `DF_DEBUG` | No | Debug mode (default: false) |
 
 ---

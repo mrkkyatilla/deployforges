@@ -104,6 +104,7 @@ Requirements:
 - `DB_PASSWORD` — strong password
 - `DF_GEMINI_API_KEY`  api key
 - `DF_ADMIN_API_KEY` — random strong string  
+- `DF_REQUIRE_EMAIL_VERIFICATION` — `false` for self-host (instant API key). Set `true` only after email verification is implemented.
 - `DF_GCP_PROJECT_ID` / region — Cloud Run  **deploy correction** or `DF_BUILD_BACKEND=kaniko`. 
 - `DF_BUILD_BACKEND` — `local_docker`, `kaniko` (GCP Cloud Run Job + Kaniko), `skip`   
  

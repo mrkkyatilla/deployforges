@@ -84,6 +84,12 @@ class Settings(BaseSettings):
     # --- Admin ---
     admin_api_key: str = ""
 
+    # --- Auth / registration ---
+    # When True: POST /auth/register returns 501 until email verification (SMTP + tokens) is implemented.
+    # Self-host / staging: keep False so users get an API key immediately.
+    # Production later: set True after shipping the verify flow (do not forget).
+    require_email_verification: bool = False
+
     # --- Rate Limiting ---
     rate_limit_free: int = 10
     rate_limit_pro: int = 100

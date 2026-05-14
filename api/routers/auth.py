@@ -6,10 +6,11 @@ import uuid
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from api.config import settings
 from api.middleware.auth import AuthenticatedUser, get_current_user, hash_api_key
 from db.models import APIKey, User
 from db.session import get_db
@@ -18,7 +19,30 @@ router = APIRouter(prefix="/auth", tags=["auth"])
 
 
 class RegisterRequest(BaseModel):
-    email: EmailStr
+    """Email as str: relaxed format when DF_REQUIRE_EMAIL_VERIFICATION=false (self-host friendly)."""
+
+    email: str = Field(..., min_length=3, max_length=255)
+
+    @field_validator("email", mode="before")
+    @classmethod
+    def _strip_email(cls, v: object) -> str:
+        if v is None:
+            raise ValueError("email is required")
+        s = str(v).strip()
+        if not s:
+            raise ValueError("email is required")
+        return s
+
+    @field_validator("email")
+    @classmethod
+    def _normalize_email(cls, v: str) -> str:
+        lower = v.lower()
+        if "@" not in lower or lower.startswith("@") or lower.endswith("@"):
+            raise ValueError("Invalid email format")
+        local, _, domain = lower.partition("@")
+        if not local or not domain or ".." in local or ".." in domain:
+            raise ValueError("Invalid email format")
+        return f"{local}@{domain}"
 
 
 class RegisterResponse(BaseModel):
@@ -63,6 +87,16 @@ async def register(
     payload: RegisterRequest,
     db: AsyncSession = Depends(get_db),
 ) -> RegisterResponse:
+    if settings.require_email_verification:
+        raise HTTPException(
+            status_code=501,
+            detail=(
+                "Email verification is enabled (DF_REQUIRE_EMAIL_VERIFICATION=true) but is not "
+                "implemented yet. Set DF_REQUIRE_EMAIL_VERIFICATION=false for self-hosted sign-up, "
+                "or add the verification flow before enabling this flag."
+            ),
+        )
+
     result = await db.execute(select(User).where(User.email == payload.email))
     existing = result.scalar_one_or_none()
     if existing:
