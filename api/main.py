@@ -47,10 +47,11 @@ X-API-Key: df_live_your_api_key_here
 
 ## Rate Limits
 
-- Free: 10 requests/hour
-- Starter: 50 requests/hour
-- Builder: 100 requests/hour
-- Scale: 1000 requests/hour
+Per `X-API-Key`, sliding window (`DF_RATE_LIMIT_WINDOW_SECONDS`, default 3600s). Tiers come from Redis (`tier:<api_key>`) or default to **free**:
+
+- Free: `DF_RATE_LIMIT_FREE` (default 50 requests/hour)
+- Pro: `DF_RATE_LIMIT_PRO` (default 100 requests/hour)
+- Enterprise: 10000 requests/hour (fixed in code)
 """,
     lifespan=lifespan,
     docs_url="/docs",

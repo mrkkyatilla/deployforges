@@ -108,8 +108,8 @@ class Settings(BaseSettings):
     # Production later: set True after shipping the verify flow (do not forget).
     require_email_verification: bool = False
 
-    # --- Rate Limiting ---
-    rate_limit_free: int = 10
+    # --- Rate Limiting (per API key, sliding window; see api/middleware/rate_limit.py) ---
+    rate_limit_free: int = 50
     rate_limit_pro: int = 100
     rate_limit_window_seconds: int = 3600
 

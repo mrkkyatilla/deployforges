@@ -122,6 +122,9 @@ curl http://localhost:8000/api/v1/projects/{id}/result \
 | `DF_ADMIN_API_KEY` | No | For admin endpoints |
 | `DF_REQUIRE_EMAIL_VERIFICATION` | No | `false` (default): instant sign-up + API key. `true`: register returns 501 until verify-by-email is implemented — use before going production. |
 | `DF_DEBUG` | No | Debug mode (default: false) |
+| `DF_RATE_LIMIT_FREE` | No | Max requests/hour per API key when tier is free (default: 50). |
+| `DF_RATE_LIMIT_PRO` | No | Max requests/hour when tier is pro (default: 100). |
+| `DF_RATE_LIMIT_WINDOW_SECONDS` | No | Sliding window length in seconds (default: 3600). |
 | `DF_AI_DEBUG_IO` | No | When true, logs truncated Gemini prompts/responses (masked). |
 | `DF_AI_DEBUG_MAX_CHARS` | No | Max chars per prompt/response excerpt for logs and DB (default: 8000). |
 | `DF_AI_PERSIST_IO_EXCERPTS` | No | When true, stores excerpts + parse metadata on ``ai_interactions.extra``. |
