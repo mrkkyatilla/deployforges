@@ -65,8 +65,24 @@ class Settings(BaseSettings):
 
     # Dockerfile generation: optional plan JSON step before full generation (Flash).
     ai_dockerfile_plan_enabled: bool = True
+    # When False: skip the extra Flash JSON-repair pass on plan parse failure (saves one call).
+    ai_dockerfile_plan_json_repair_enabled: bool = True
     # Optional critic + one full refine pass after generation (Pro refine); higher cost.
     ai_dockerfile_critic_refine_enabled: bool = False
+    # Two-phase generation: (1) compact metadata JSON without embedded Dockerfile string,
+    # (2) Dockerfile body as plain text — reduces JSON escaping / MAX_TOKENS truncation issues.
+    ai_dockerfile_two_phase_enabled: bool = True
+    # Minimum max_output_tokens floor for Pro generation (non-monorepo); capped by budget and
+    # gemini_max_output_tokens_cap. Monorepos use ai_generation_output_floor_monorepo_tokens.
+    ai_generation_output_floor_tokens: int = 4096
+    ai_generation_output_floor_monorepo_tokens: int = 8192
+    # When True and project is not high-complexity: use Flash for legacy single-shot generation.
+    ai_generation_use_flash_for_simple: bool = False
+    # After first Flash JSON repair failure, retry once with a shorter tail-focused prompt.
+    ai_json_repair_second_attempt_enabled: bool = True
+    # Reserved: if prompt-side estimated tokens exceed this threshold, consider Gemini Files API
+    # (not implemented in code yet; 0 = off). See README "Large repositories".
+    gemini_files_api_prompt_token_threshold: int = 0
 
     # Admin reporter: LLM narrative over aggregate metrics only (never customer-triggered).
     reporter_llm_enabled: bool = False

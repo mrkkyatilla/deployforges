@@ -42,8 +42,15 @@ def schema_dockerfile_plan() -> types.Schema:
     return types.Schema(
         type=_T.OBJECT,
         properties={
-            "base_image": types.Schema(type=_T.STRING),
-            "stages": types.Schema(type=_T.ARRAY, items=str_item),
+            "base_image": types.Schema(
+                type=_T.STRING,
+                description="OCI image reference with explicit tag (not :latest).",
+            ),
+            "stages": types.Schema(
+                type=_T.ARRAY,
+                items=str_item,
+                description='Short stage labels only, e.g. "deps", "builder", "runtime".',
+            ),
             "copy_strategy": types.Schema(type=_T.STRING),
             "install_commands_outline": types.Schema(type=_T.ARRAY, items=str_item),
             "cmd": types.Schema(type=_T.STRING),
@@ -106,6 +113,36 @@ def schema_reporter_analysis() -> types.Schema:
     )
 
 
+def schema_dockerfile_generation_metadata() -> types.Schema:
+    """Phase-1 JSON: same fields as full generation except embedded ``dockerfile`` string."""
+    str_item = types.Schema(type=_T.STRING)
+    int_item = types.Schema(type=_T.INTEGER)
+    esc = (
+        "Plain UTF-8 text only inside JSON strings. Escape every double-quote inside a string as \\\". "
+        "Do not put raw newlines inside JSON strings; use \\n if needed."
+    )
+    return types.Schema(
+        type=_T.OBJECT,
+        properties={
+            "analysis_summary": types.Schema(
+                type=_T.STRING,
+                description=f"3–5 sentence summary; Dockerfile body is emitted in a separate step. {esc}",
+            ),
+            "dockerignore": types.Schema(type=_T.STRING, description=f".dockerignore body. {esc}"),
+            "warnings": types.Schema(type=_T.ARRAY, items=str_item),
+            "exposed_ports": types.Schema(type=_T.ARRAY, items=int_item),
+            "estimated_image_size_mb": types.Schema(type=_T.INTEGER, nullable=True),
+            "requires_env_vars": types.Schema(type=_T.ARRAY, items=str_item, nullable=True),
+        },
+        required=[
+            "analysis_summary",
+            "dockerignore",
+            "warnings",
+            "exposed_ports",
+        ],
+    )
+
+
 def schema_dockerfile_generation() -> types.Schema:
     """Matches ``MASTER_SYSTEM_PROMPT`` JSON shape."""
     str_item = types.Schema(type=_T.STRING)
@@ -117,14 +154,22 @@ def schema_dockerfile_generation() -> types.Schema:
                 type=_T.STRING,
                 description=(
                     "Brief technical summary. The dockerfile field must include "
-                    "short explanatory # comments before each major stage (FROM, deps, app, runtime)."
+                    "short explanatory # comments before each major stage (FROM, deps, app, runtime). "
+                    "Inside JSON strings escape every literal double-quote as \\\" and avoid raw newlines "
+                    "(use \\n). Unescaped quotes break parsing."
                 ),
             ),
             "dockerfile": types.Schema(
                 type=_T.STRING,
-                description="Full Dockerfile; include # comments before each major stage.",
+                description=(
+                    "Full Dockerfile; include # comments before each major stage. "
+                    "This value is a JSON string: escape internal \" as \\\" or the response becomes invalid."
+                ),
             ),
-            "dockerignore": types.Schema(type=_T.STRING),
+            "dockerignore": types.Schema(
+                type=_T.STRING,
+                description="Entire .dockerignore; escape quotes if any appear in paths.",
+            ),
             "warnings": types.Schema(type=_T.ARRAY, items=str_item),
             "exposed_ports": types.Schema(type=_T.ARRAY, items=int_item),
             "estimated_image_size_mb": types.Schema(type=_T.INTEGER, nullable=True),

@@ -35,7 +35,10 @@ include at least one short `#` comment explaining intent and ordering (caching, 
 
 ## Output Format
 
-Respond ONLY with valid JSON matching this exact structure:
+Respond ONLY with valid JSON matching this exact structure. **Critical:** every string value is JSON-encoded;
+escape any literal double-quote inside a string as backslash-double-quote, and use backslash-n for newlines
+inside strings — unterminated strings break the pipeline.
+
 {
   "analysis_summary": "3-sentence technical summary of the project and architectural decisions",
   "dockerfile": "Complete Dockerfile content with explanatory comments",
@@ -67,7 +70,9 @@ Keep or add brief `#` comments before major stages so operators can follow the f
 
 ## Output Format
 
-Respond ONLY with valid JSON:
+Respond ONLY with valid JSON. **Critical:** escape double-quotes inside every string value; do not emit raw
+newlines inside JSON strings.
+
 {
   "analysis_summary": "What caused the error and what was changed",
   "dockerfile": "Complete fixed Dockerfile",
@@ -82,7 +87,8 @@ You are a senior container engineer. Given a project fingerprint (JSON), output 
 JSON build plan: base image choice, multi-stage names, copy strategy, high-level install steps, \
 runtime command, whether to use a non-root user, and optional healthcheck approach. \
 Do NOT output a full Dockerfile — only the plan object fields required by the schema. \
-Be concise; stages should be short labels like "deps", "builder", "runtime".
+Be concise; stages should be short labels like "deps", "builder", "runtime". \
+Use valid JSON only; escape double-quotes inside string values.
 """
 
 DOCKERFILE_CRITIC_SYSTEM_PROMPT = """\
@@ -97,5 +103,27 @@ Produce a FULL revised Dockerfile and .dockerignore that addresses every critic 
 the application intent. Preserve multi-stage structure where appropriate. Use specific image tags, \
 non-root USER, and HEALTHCHECK. Include brief `#` comments before major stages. \
 Respond ONLY with valid JSON matching the generation schema (analysis_summary, dockerfile, dockerignore, \
-warnings, exposed_ports, optional estimated_image_size_mb, optional requires_env_vars).
+warnings, exposed_ports, optional estimated_image_size_mb, optional requires_env_vars). **Escape quotes
+inside JSON string values.**
+"""
+
+MASTER_DOCKERFILE_METADATA_SYSTEM_PROMPT = """\
+You are a Senior DevOps and Platform Engineer. Given a project fingerprint (and optional plan), you produce \
+structured metadata for containerization: analysis summary, .dockerignore, warnings, exposed ports, and \
+optional size/env hints. You do **not** output the Dockerfile itself — a follow-up model call writes only \
+the Dockerfile as plain text.
+
+Follow the same security and dependency rules as full Dockerfile generation (no secrets, multi-stage intent, \
+non-root, HEALTHCHECK). Keep analysis_summary concise (3–5 sentences).
+
+## Output Format
+
+Respond ONLY with valid JSON per the schema (no dockerfile field). **Escape double-quotes inside strings.**
+"""
+
+DOCKERFILE_BODY_ONLY_SYSTEM_PROMPT = """\
+You are a Senior DevOps Engineer. Output **only** the Dockerfile source: first non-empty line must be `FROM ` \
+with a specific tag (not :latest). Use multi-stage builds, non-root USER, HEALTHCHECK, layer caching, and \
+short `#` comments before each major stage. Do not output JSON, markdown fences, or explanations — Dockerfile \
+text only.
 """

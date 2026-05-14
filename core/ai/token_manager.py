@@ -73,5 +73,30 @@ def select_model_for_step(step: str) -> str:
     return COMPLEXITY_THRESHOLDS.get(step, settings.gemini_pro_model)
 
 
+def fingerprint_is_high_complexity(fingerprint: dict | None) -> bool:
+    """Monorepo / multi-language signals: prefer Pro + tighter context budgets."""
+    fp = fingerprint or {}
+    if fp.get("is_monorepo"):
+        return True
+    if fp.get("monorepo_detection_method") == "multi_deps":
+        return True
+    services = fp.get("services")
+    if isinstance(services, list) and len(services) > 2:
+        return True
+    secondary = (fp.get("language") or {}).get("secondary")
+    if isinstance(secondary, list) and len(secondary) >= 2:
+        return True
+    return False
+
+
+def select_generation_model(fingerprint: dict | None) -> str:
+    """Model for Dockerfile JSON generation (legacy single-shot); two-phase uses Flash+Pro internally."""
+    if fingerprint_is_high_complexity(fingerprint):
+        return COMPLEXITY_THRESHOLDS.get("generation", settings.gemini_pro_model)
+    if settings.ai_generation_use_flash_for_simple:
+        return settings.gemini_flash_model
+    return COMPLEXITY_THRESHOLDS.get("generation", settings.gemini_pro_model)
+
+
 def estimate_tokens(text: str) -> int:
     return len(text) // 4

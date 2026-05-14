@@ -172,7 +172,28 @@ def _pipeline_crash_error_summary(exc: BaseException, *, max_len: int = 1800) ->
     if "MAX_TOKENS" in blob.upper() and "empty response body" in low:
         return (
             "Gemini produced no JSON before hitting the output token limit (MAX_TOKENS). "
-            "Reduce prompt/context size, or raise DF_GEMINI_MAX_OUTPUT_TOKENS_CAP (default 16384)."
+            "Reduce prompt/context size, or raise DF_GEMINI_MAX_OUTPUT_TOKENS_CAP (see api/config default)."
+        )
+    if "unterminated string" in low or "unterminated string" in str(exc).lower():
+        return (
+            "Model output broke inside a JSON string (often a large Dockerfile embedded in JSON). "
+            "Retry with a smaller repo scope, keep two-phase Dockerfile generation enabled "
+            "(DF_AI_DOCKERFILE_TWO_PHASE_ENABLED), or increase token/output limits if appropriate."
+        )
+    if "metadata phase" in low and "no valid json" in low:
+        return (
+            "Dockerfile generation failed in the metadata JSON step. Retry the build; if it persists, "
+            "temporarily set DF_AI_DOCKERFILE_TWO_PHASE_ENABLED=false to use legacy single-shot JSON mode."
+        )
+    if "body phase" in low and "plain text" in low:
+        return (
+            "Dockerfile text step did not return a valid Dockerfile. Retry; check Gemini status, "
+            "or disable two-phase mode (DF_AI_DOCKERFILE_TWO_PHASE_ENABLED=false) as a fallback."
+        )
+    if "repair_parse=" in low and "after repair" in low:
+        return (
+            "JSON repair did not produce a parseable Dockerfile payload. Retry the pipeline or reduce "
+            "repository context sent to the model (monorepo: fewer critical files)."
         )
 
     root = exc

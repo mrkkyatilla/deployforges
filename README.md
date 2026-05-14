@@ -142,6 +142,13 @@ Uses `curl` without `-f`, handles `429`, and avoids `set -u` issues with an empt
 | `DF_AI_DEBUG_MAX_CHARS` | No | Max chars per prompt/response excerpt for logs and DB (default: 8000). |
 | `DF_AI_PERSIST_IO_EXCERPTS` | No | When true, stores excerpts + parse metadata on ``ai_interactions.extra``. |
 | `DF_AI_DOCKERFILE_PLAN_ENABLED` | No | When true (default), runs a Flash JSON **plan** step before Dockerfile generation. |
+| `DF_AI_DOCKERFILE_PLAN_JSON_REPAIR_ENABLED` | No | When true (default), one Flash **repair** pass if plan JSON fails to parse. Set false to skip that extra call. |
+| `DF_AI_DOCKERFILE_TWO_PHASE_ENABLED` | No | When true (default), metadata JSON (Flash) then Dockerfile **plain text** (Pro); reduces JSON string truncation issues. |
+| `DF_AI_GENERATION_OUTPUT_FLOOR_TOKENS` | No | Floor for `max_output_tokens` on generation-like steps vs budget (default 4096). |
+| `DF_AI_GENERATION_OUTPUT_FLOOR_MONOREPO_TOKENS` | No | Same for monorepo / multi-deps fingerprints (default 8192). |
+| `DF_AI_GENERATION_USE_FLASH_FOR_SIMPLE` | No | When true, non–high-complexity fingerprints use Flash for **legacy** single-shot JSON generation only. |
+| `DF_AI_JSON_REPAIR_SECOND_ATTEMPT_ENABLED` | No | When true (default), JSON repair retries once with a tail-focused Flash prompt. |
+| `DF_GEMINI_FILES_API_PROMPT_TOKEN_THRESHOLD` | No | Reserved: future Files API for huge prompts. **0** = disabled (no runtime behavior yet). |
 | `DF_AI_DOCKERFILE_CRITIC_REFINE_ENABLED` | No | When true, runs critic + optional one-shot **refine** after generation (extra tokens). |
 | `DF_REPORTER_LLM_ENABLED` | No | When true, ``POST /api/v1/admin/reporter/run`` may call Gemini on **aggregate** metrics only. |
 | `DF_REPORTER_BEAT_ENABLED` | No | When true, Celery Beat schedules daily ``deployforge.reporter_run`` (no customer HTTP). |
@@ -158,6 +165,12 @@ Customer API keys (``X-API-Key``) cannot call these routes.
 | POST | `/api/v1/admin/reporter/run` | Same metrics plus optional LLM summary (`include_llm=true` and ``DF_REPORTER_LLM_ENABLED``) |
 
 Query params for reporter: ``period_days`` (1–90), ``include_llm`` (default false).
+
+### Large repositories and Gemini Files API
+
+Monorepos and very large trees stress inline JSON (embedded Dockerfile strings can hit **MAX_TOKENS** or break parsing). DeployForge defaults to **two-phase** generation: a compact metadata JSON step, then a **plain-text** Dockerfile body (`DF_AI_DOCKERFILE_TWO_PHASE_ENABLED`, default on). Tighter **critical-file** budgets apply when the fingerprint looks high-complexity (monorepo, multi-deps, many services).
+
+`DF_GEMINI_FILES_API_PROMPT_TOKEN_THRESHOLD` is a **reserved** hook: at **0** (default) nothing uses the Files API. A future version may upload oversized artifacts when estimated prompt tokens exceed this threshold, instead of pasting megabytes into the prompt.
 
 ---
 

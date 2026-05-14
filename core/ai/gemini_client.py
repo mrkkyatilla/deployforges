@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+"""Gemini API client (generate / JSON schema / retries).
+
+Large-repo Files API uploads are not implemented yet; see
+``Settings.gemini_files_api_prompt_token_threshold`` (0 = off) and README "Large repositories".
+"""
+
 import asyncio
 import json
 import logging

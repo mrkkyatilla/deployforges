@@ -78,7 +78,11 @@ class ContextBuilder:
         self,
         root_path: str,
         max_tokens: int = 10_000,
+        *,
+        aggressive: bool = False,
     ) -> dict[str, str]:
+        if aggressive:
+            max_tokens = max(1200, int(max_tokens * 0.68))
         root = Path(root_path)
         selected: dict[str, str] = {}
         remaining_tokens = max_tokens

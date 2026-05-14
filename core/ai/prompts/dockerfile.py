@@ -56,6 +56,70 @@ def build_generation_prompt(
     return "\n".join(sections)
 
 
+def build_generation_metadata_prompt(
+    fingerprint: dict,
+    template: str | None = None,
+    plan: dict[str, Any] | None = None,
+) -> str:
+    """Phase 1 of two-phase generation: JSON without embedded Dockerfile string."""
+    sections = ["## Project Analysis Result\n"]
+    sections.append("```json")
+    sections.append(json.dumps(fingerprint, indent=2, default=str))
+    sections.append("```\n")
+
+    if plan:
+        sections.append("## Approved build plan\n")
+        sections.append("Follow this plan unless the fingerprint clearly contradicts it:\n")
+        sections.append("```json")
+        sections.append(json.dumps(plan, indent=2, default=str))
+        sections.append("```\n")
+
+    if template:
+        sections.append("## Skeleton Template\n")
+        sections.append("Use this as a starting point and customize it for the project:\n")
+        sections.append(f"```dockerfile\n{template}\n```\n")
+
+    sections.append("## Task\n")
+    sections.append(
+        "Emit JSON only per the schema: analysis_summary, dockerignore, warnings, exposed_ports, "
+        "optional estimated_image_size_mb and requires_env_vars.\n"
+        "**Do not** include a dockerfile field — the Dockerfile will be produced in a separate plain-text step.\n"
+        "Escape double-quotes inside every JSON string value."
+    )
+    return "\n".join(sections)
+
+
+def build_dockerfile_body_only_prompt(
+    fingerprint: dict,
+    template: str | None,
+    plan: dict[str, Any] | None,
+    metadata: dict[str, Any],
+) -> str:
+    """Phase 2: plain Dockerfile only, guided by fingerprint, plan, template, and phase-1 metadata."""
+    sections = ["## Project Analysis Result\n", "```json\n"]
+    sections.append(json.dumps(fingerprint, indent=2, default=str))
+    sections.append("```\n")
+
+    if plan:
+        sections.append("## Approved build plan\n```json\n")
+        sections.append(json.dumps(plan, indent=2, default=str))
+        sections.append("```\n")
+
+    if template:
+        sections.append("## Skeleton Template\n```dockerfile\n")
+        sections.append(template or "")
+        sections.append("\n```\n")
+
+    sections.append("## Phase-1 metadata (must align)\n```json\n")
+    sections.append(json.dumps(metadata, indent=2, default=str))
+    sections.append(
+        "```\n## Task\n"
+        "Write **only** the Dockerfile source. First substantive line must be `FROM ` with a pinned tag. "
+        "Honor the plan, metadata ports/warnings, and security rules from your system instructions.\n"
+    )
+    return "".join(sections)
+
+
 def build_critic_prompt(dockerfile: str, fingerprint: dict) -> str:
     sections = ["## Dockerfile to review\n", "```dockerfile\n", dockerfile, "\n```\n"]
     pruned = {

@@ -12,25 +12,35 @@ from core.ai.gemini_schemas import (
     schema_dockerfile_critic,
     schema_dockerfile_fix,
     schema_dockerfile_generation,
+    schema_dockerfile_generation_metadata,
     schema_dockerfile_plan,
 )
 from core.ai.json_response import ParseResult, parse_model_json_from_ai_response
 from core.ai.prompts.dockerfile import (
     build_critic_prompt,
+    build_dockerfile_body_only_prompt,
     build_fix_prompt,
+    build_generation_metadata_prompt,
     build_generation_prompt,
     build_plan_prompt,
     build_refine_from_critic_prompt,
 )
 from core.ai.prompts.system import (
+    DOCKERFILE_BODY_ONLY_SYSTEM_PROMPT,
     DOCKERFILE_CRITIC_SYSTEM_PROMPT,
     DOCKERFILE_PLAN_SYSTEM_PROMPT,
     DOCKERFILE_REFINE_FROM_CRITIC_SYSTEM_PROMPT,
     ERROR_FIX_SYSTEM_PROMPT,
+    MASTER_DOCKERFILE_METADATA_SYSTEM_PROMPT,
     MASTER_SYSTEM_PROMPT,
 )
 from core.ai.templates import select_template
-from core.ai.token_manager import TokenBudget, select_model_for_step
+from core.ai.token_manager import (
+    TokenBudget,
+    fingerprint_is_high_complexity,
+    select_generation_model,
+    select_model_for_step,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +116,74 @@ def _warn_if_sparse_comments(dockerfile: str) -> None:
             "Dockerfile has few comment lines (%d); consider prompting review",
             comment_lines,
         )
+
+
+def _generation_max_output_tokens(allowed: int, fingerprint: dict) -> int:
+    """Align Pro max_output with budget and ``gemini_max_output_tokens_cap``; monorepo raises floor."""
+    cap = int(settings.gemini_max_output_tokens_cap)
+    is_mono = bool(fingerprint.get("is_monorepo")) or (
+        fingerprint.get("monorepo_detection_method") == "multi_deps"
+    )
+    floor = (
+        int(settings.ai_generation_output_floor_monorepo_tokens)
+        if is_mono
+        else int(settings.ai_generation_output_floor_tokens)
+    )
+    target = max(floor, min(allowed, cap))
+    return min(cap, allowed, target)
+
+
+def _critical_files_max_tokens(allowed: int, fingerprint: dict) -> int:
+    if fingerprint_is_high_complexity(fingerprint):
+        return min(5000, allowed // 2)
+    return min(8000, allowed // 2)
+
+
+def _strip_plain_dockerfile_body(text: str) -> str:
+    t = (text or "").strip()
+    if not t:
+        return ""
+    if "```" in t:
+        start = t.find("```")
+        if start >= 0:
+            after = t[start + 3 :].lstrip()
+            if after.lower().startswith("dockerfile"):
+                after = after[len("dockerfile") :].lstrip()
+            close = after.rfind("```")
+            if close >= 0:
+                return after[:close].strip()
+    return t
+
+
+def _user_hint_for_json_failures(
+    pr: ParseResult,
+    pr2: ParseResult | None,
+    fingerprint: dict | None,
+) -> str:
+    fp = fingerprint or {}
+    low = f"{pr.error or ''} {(pr2.error if pr2 else '') or ''}".lower()
+    bits: list[str] = []
+    if "unterminated string" in low:
+        bits.append(
+            "TR: JSON içinde kapanmamış dize (çoğunlukla Dockerfile gömülü). "
+            "Repo bağlamını daraltıp tekrar deneyin veya iki aşamalı üretimi açık tutun (DF_AI_DOCKERFILE_TWO_PHASE_ENABLED). "
+            "EN: Unterminated string in JSON; shrink context, retry, or keep two-phase generation enabled."
+        )
+    if pr.data is None and pr2 is None:
+        bits.append(
+            "TR: JSON onarımı çalıştırılamadı veya bütçe yetersiz. EN: JSON repair did not run or budget was too low."
+        )
+    elif pr2 is not None and pr2.data is None and pr2.error:
+        bits.append(
+            "TR: Flash onarım çıktısı ayrıştırılamadı. EN: Repair step returned unparseable JSON. "
+            f"repair_parse={pr2.error}"
+        )
+    if fingerprint_is_high_complexity(fp):
+        bits.append(
+            "TR: Monorepo/karmaşık algı — kritik dosya bağlamı otomatik kısıldı. EN: High-complexity fingerprint; "
+            "critical-file context was tightened automatically."
+        )
+    return " ".join(bits)
 
 
 @dataclass
@@ -215,7 +293,7 @@ class DockerfileGenerator:
         pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         repair_resp: AIResponse | None = None
-        if data is None:
+        if data is None and settings.ai_dockerfile_plan_json_repair_enabled:
             hint = (
                 "base_image (string), stages (array of strings), copy_strategy (string), "
                 "install_commands_outline (array of strings), cmd (string), "
@@ -234,6 +312,12 @@ class DockerfileGenerator:
                 if repair_resp is not None:
                     token_budget.record("dockerfile_plan", repair_resp.total_tokens)
                 data = repaired
+        elif data is None:
+            logger.warning(
+                "Dockerfile plan JSON parse failed; repair disabled "
+                "(DF_AI_DOCKERFILE_PLAN_JSON_REPAIR_ENABLED=false) parse_error=%s",
+                pr.error,
+            )
         elif not _plan_is_usable(data):
             logger.warning(
                 "Dockerfile plan JSON parsed but unusable; skipping LLM JSON repair",
@@ -259,22 +343,164 @@ class DockerfileGenerator:
         language = fingerprint.get("language", {}).get("primary", "python")
         template = select_template(language)
 
+        ctx_cap = _critical_files_max_tokens(allowed, fingerprint)
         critical_files = self.context_builder.build_critical_files(
-            project_path, max_tokens=min(8000, allowed // 2)
+            project_path,
+            max_tokens=ctx_cap,
+            aggressive=fingerprint_is_high_complexity(fingerprint),
         )
         enriched_fp = {**fingerprint, "critical_files": critical_files}
 
         plan: dict[str, Any] | None = await self._generate_plan(enriched_fp, template, token_budget)
 
+        if settings.ai_dockerfile_two_phase_enabled:
+            return await self._generate_two_phase_dockerfile(
+                enriched_fp=enriched_fp,
+                template=template,
+                plan=plan,
+                token_budget=token_budget,
+                allowed=allowed,
+            )
+        return await self._generate_single_json_dockerfile(
+            enriched_fp=enriched_fp,
+            template=template,
+            plan=plan,
+            token_budget=token_budget,
+            allowed=allowed,
+        )
+
+    async def _generate_two_phase_dockerfile(
+        self,
+        *,
+        enriched_fp: dict,
+        template: str | None,
+        plan: dict[str, Any] | None,
+        token_budget: TokenBudget,
+        allowed: int,
+    ) -> DockerfileResult:
+        meta_schema = schema_dockerfile_generation_metadata()
+        max_meta_out = min(6144, _generation_max_output_tokens(allowed, enriched_fp))
+
+        prompt_meta = build_generation_metadata_prompt(enriched_fp, template, plan=plan)
+        resp_meta = await self.client.generate_json(
+            prompt=prompt_meta,
+            system_instruction=MASTER_DOCKERFILE_METADATA_SYSTEM_PROMPT,
+            model=settings.gemini_flash_model,
+            temperature=0.1,
+            max_output_tokens=max_meta_out,
+            response_schema=meta_schema,
+            io_log_label="dockerfile_generation_metadata",
+        )
+        token_budget.record("generation", resp_meta.total_tokens)
+
+        prm = parse_model_json_from_ai_response(resp_meta.text, resp_meta.parsed_dict)
+        meta_data = prm.data
+        repair_meta: AIResponse | None = None
+        prm2: ParseResult | None = None
+        if meta_data is None:
+            logger.error("Generation metadata JSON parse failed: %s", prm.error)
+            hint_m = (
+                "analysis_summary (string), dockerignore (string), warnings (array of strings), "
+                "exposed_ports (array of integers), optional estimated_image_size_mb (integer), "
+                "optional requires_env_vars (array of strings)"
+            )
+            repaired_m, repair_meta = await self._repair_json_object(
+                broken_text=resp_meta.text,
+                key_hint=hint_m,
+                token_budget=token_budget,
+                spend_step="generation",
+                response_schema=meta_schema,
+                io_label="dockerfile_generation_metadata",
+                parsed_dict=resp_meta.parsed_dict,
+            )
+            if repaired_m is not None:
+                if repair_meta is not None:
+                    token_budget.record("generation", repair_meta.total_tokens)
+                    prm2 = parse_model_json_from_ai_response(
+                        repair_meta.text, repair_meta.parsed_dict
+                    )
+                else:
+                    prm2 = ParseResult(repaired_m, "local_json_recovery", resp_meta.text, None)
+                meta_data = repaired_m
+
+        if meta_data is None:
+            hint_u = _user_hint_for_json_failures(prm, prm2, enriched_fp)
+            repair_err = f"; repair_parse={prm2.error!s}" if prm2 is not None else ""
+            raise RuntimeError(
+                "AI Dockerfile metadata phase returned no valid JSON. "
+                f"parse_error={prm.error!s}{repair_err}"
+                + (f" | {hint_u}" if hint_u else "")
+            )
+
+        can2, allowed2 = token_budget.can_spend("generation", minimum=500)
+        if not can2:
+            raise RuntimeError(
+                "Token budget exhausted after metadata phase (Dockerfile body step).",
+            )
+
+        max_body = _generation_max_output_tokens(allowed2, enriched_fp)
+        prompt_body = build_dockerfile_body_only_prompt(enriched_fp, template, plan, meta_data)
+        resp_body = await self.client.generate(
+            prompt=prompt_body,
+            system_instruction=DOCKERFILE_BODY_ONLY_SYSTEM_PROMPT,
+            model=settings.gemini_pro_model,
+            temperature=0.1,
+            max_output_tokens=max_body,
+            response_mime_type="text/plain",
+            response_schema=None,
+            io_log_label="dockerfile_generation_body",
+        )
+        token_budget.record("generation", resp_body.total_tokens)
+
+        dockerfile = _strip_plain_dockerfile_body(resp_body.text)
+        if not _dockerfile_is_plausible(dockerfile):
+            raise RuntimeError(
+                "AI Dockerfile body phase returned empty or non-Dockerfile plain text. "
+                "user_hint: TR: Dockerfile metni çıkmadı; tekrar deneyin. "
+                "EN: No plausible Dockerfile from body step; retry or set DF_AI_DOCKERFILE_TWO_PHASE_ENABLED=false.",
+            )
+
+        full: dict[str, Any] = {**meta_data, "dockerfile": dockerfile}
+        total_tok = (
+            resp_meta.total_tokens
+            + (repair_meta.total_tokens if repair_meta else 0)
+            + resp_body.total_tokens
+        )
+        result = self._result_from_generation_dict(full, total_tok)
+        meta_io = _io_meta(
+            interaction="generation",
+            parse_ok=True,
+            parse_first=prm,
+            parse_second=prm2,
+            response=resp_meta,
+            response2=repair_meta,
+        )
+        meta_io["two_phase"] = True
+        meta_io["phase2_model"] = resp_body.model
+        meta_io["phase2_tokens"] = resp_body.total_tokens
+        result.io_meta = meta_io
+        _warn_if_sparse_comments(result.dockerfile)
+        return result
+
+    async def _generate_single_json_dockerfile(
+        self,
+        *,
+        enriched_fp: dict,
+        template: str | None,
+        plan: dict[str, Any] | None,
+        token_budget: TokenBudget,
+        allowed: int,
+    ) -> DockerfileResult:
         prompt = build_generation_prompt(enriched_fp, template, plan=plan)
-        model = select_model_for_step("generation")
+        model = select_generation_model(enriched_fp)
         schema = schema_dockerfile_generation()
+        max_out = _generation_max_output_tokens(allowed, enriched_fp)
 
         response = await self.client.generate_json(
             prompt=prompt,
             system_instruction=MASTER_SYSTEM_PROMPT,
             model=model,
-            max_output_tokens=min(4096, allowed),
+            max_output_tokens=max_out,
             response_schema=schema,
             io_log_label="dockerfile_generation",
         )
@@ -283,7 +509,7 @@ class DockerfileGenerator:
         pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         repair_resp: AIResponse | None = None
-        pr2 = None
+        pr2: ParseResult | None = None
 
         if data is None:
             logger.error("Generation JSON parse failed: %s", pr.error)
@@ -319,22 +545,26 @@ class DockerfileGenerator:
 
         if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
             repair_err = f"; repair_parse={pr2.error!s}" if pr2 is not None else ""
-            raise RuntimeError(
+            hint_line = _user_hint_for_json_failures(pr, pr2, enriched_fp)
+            msg = (
                 "AI Dockerfile generation returned no valid JSON Dockerfile after repair. "
                 f"parse_error={pr.error!s}{repair_err}"
             )
+            if hint_line:
+                msg = f"{msg} | {hint_line}"
+            raise RuntimeError(msg)
 
         total_tok = response.total_tokens + (repair_resp.total_tokens if repair_resp else 0)
         result = self._result_from_generation_dict(data, total_tok)
-        parse_second = pr2
         result.io_meta = _io_meta(
             interaction="generation",
             parse_ok=True,
             parse_first=pr,
-            parse_second=parse_second,
+            parse_second=pr2,
             response=response,
             response2=repair_resp,
         )
+        result.io_meta["two_phase"] = False
         _warn_if_sparse_comments(result.dockerfile)
         return result
 
@@ -389,7 +619,9 @@ class DockerfileGenerator:
         if not can_spend:
             raise RuntimeError("Token budget exhausted for dockerfile_refine step")
         critical_files = self.context_builder.build_critical_files(
-            project_path, max_tokens=min(6000, allowed // 2)
+            project_path,
+            max_tokens=_critical_files_max_tokens(allowed, fingerprint),
+            aggressive=fingerprint_is_high_complexity(fingerprint),
         )
         enriched_fp = {**fingerprint, "critical_files": critical_files}
         prompt = build_refine_from_critic_prompt(
@@ -401,7 +633,7 @@ class DockerfileGenerator:
             prompt=prompt,
             system_instruction=DOCKERFILE_REFINE_FROM_CRITIC_SYSTEM_PROMPT,
             model=model,
-            max_output_tokens=min(4096, allowed),
+            max_output_tokens=_generation_max_output_tokens(allowed, enriched_fp),
             response_schema=schema,
             io_log_label="dockerfile_refine",
         )
@@ -409,7 +641,7 @@ class DockerfileGenerator:
         pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         repair_resp: AIResponse | None = None
-        pr2 = None
+        pr2: ParseResult | None = None
         if data is None:
             hint = (
                 "analysis_summary (string), dockerfile (string), dockerignore (string), "
@@ -442,10 +674,14 @@ class DockerfileGenerator:
             )
         if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
             repair_err = f"; repair_parse={pr2.error!s}" if pr2 is not None else ""
-            raise RuntimeError(
+            hint_line = _user_hint_for_json_failures(pr, pr2, enriched_fp)
+            msg = (
                 "AI Dockerfile refine-from-critic returned no valid JSON Dockerfile after repair. "
                 f"parse_error={pr.error!s}{repair_err}"
             )
+            if hint_line:
+                msg = f"{msg} | {hint_line}"
+            raise RuntimeError(msg)
         total_tok = response.total_tokens + (repair_resp.total_tokens if repair_resp else 0)
         result = self._result_from_generation_dict(data, total_tok)
         parse_second = pr2
@@ -486,7 +722,7 @@ class DockerfileGenerator:
             prompt=prompt,
             system_instruction=ERROR_FIX_SYSTEM_PROMPT,
             model=model,
-            max_output_tokens=min(4096, allowed),
+            max_output_tokens=_generation_max_output_tokens(allowed, fingerprint or {}),
             response_schema=schema,
             io_log_label=f"dockerfile_fix_{attempt_number}",
         )
@@ -496,7 +732,7 @@ class DockerfileGenerator:
         pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         repair_resp: AIResponse | None = None
-        pr2 = None
+        pr2: ParseResult | None = None
 
         if data is None:
             hint = (
@@ -529,10 +765,14 @@ class DockerfileGenerator:
 
         if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
             repair_err = f"; repair_parse={pr2.error!s}" if pr2 is not None else ""
-            raise RuntimeError(
+            hint_line = _user_hint_for_json_failures(pr, pr2, fingerprint)
+            msg = (
                 f"AI Dockerfile fix returned no valid JSON Dockerfile (attempt {attempt_number}). "
                 f"parse_error={pr.error!s}{repair_err}"
             )
+            if hint_line:
+                msg = f"{msg} | {hint_line}"
+            raise RuntimeError(msg)
 
         total_tok = response.total_tokens + (repair_resp.total_tokens if repair_resp else 0)
         result = self._result_from_fix_dict(data, total_tok)
