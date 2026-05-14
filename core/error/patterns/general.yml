@@ -52,3 +52,9 @@ patterns:
     severity: high
     auto_fixable: false
     fix_strategy: analyze_with_ai
+
+  - name: buildkit_solve_failed
+    regex: "failed to solve:|executor failed running|did not complete successfully"
+    severity: high
+    auto_fixable: false
+    fix_strategy: analyze_with_ai

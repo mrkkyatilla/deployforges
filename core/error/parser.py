@@ -26,7 +26,10 @@ def extract_error_lines(build_log: str, max_lines: int = 50) -> str:
         r"(?i)returned a non-zero code",
         r"(?i)non-zero exit",
         r"(?i)exit code",
-        r"(?i)\buv\b",
+        r"(?i)failed to solve:",
+        r"(?i)executor failed running",
+        r"(?i)did not complete successfully",
+        r"(?i)unexpected argument",
         r"(?i)usage:",
         r"(?i)error:",
     ]

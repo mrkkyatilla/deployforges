@@ -48,6 +48,7 @@ class DockerfileLinter:
         issues.extend(self._check_no_secrets(lines))
         issues.extend(self._check_dangerous_commands(lines))
         issues.extend(self._check_cache_cleanup(lines))
+        issues.extend(self._check_gunicorn_wsgi_callable_syntax(lines))
 
         has_errors = any(i.severity == "error" for i in issues)
         fixed = self._apply_auto_fixes(dockerfile, issues) if issues else None
@@ -173,8 +174,35 @@ class DockerfileLinter:
                     break
         return issues
 
+    def _check_gunicorn_wsgi_callable_syntax(self, lines: list[str]) -> list[LintIssue]:
+        """Gunicorn expects ``module:callable`` — not ``module:callable()``."""
+        issues: list[LintIssue] = []
+        bad = re.compile(r"[A-Za-z0-9_.]+:\w+\(\)")
+        for i, line in enumerate(lines, 1):
+            if "gunicorn" not in line.lower():
+                continue
+            if bad.search(line):
+                issues.append(
+                    LintIssue(
+                        "DF009",
+                        "warning",
+                        "Gunicorn application must be module:callable without (); "
+                        "e.g. flaskr:create_app not flaskr:create_app()",
+                        line=i,
+                        auto_fix="FIX_GUNICORN_WSGI_PARENS",
+                    )
+                )
+        return issues
+
     def _apply_auto_fixes(self, dockerfile: str, issues: list[LintIssue]) -> str:
         fixed = dockerfile
+        if any(i.auto_fix == "FIX_GUNICORN_WSGI_PARENS" for i in issues):
+            out: list[str] = []
+            for line in fixed.splitlines():
+                if "gunicorn" in line.lower():
+                    line = re.sub(r"([A-Za-z0-9_.]+:\w+)\(\)", r"\1", line)
+                out.append(line)
+            fixed = "\n".join(out)
         for issue in issues:
             if issue.auto_fix == "ADD_USER" and "USER " not in fixed:
                 if "\nCMD " in fixed:

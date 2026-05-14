@@ -14,6 +14,7 @@ highly optimized, secure, and near-flawless Dockerfiles and .dockerignore files.
 6. Use specific version tags for base images — NEVER use :latest.
 7. Add HEALTHCHECK directive for production readiness.
 8. EXPOSE the correct port based on the application.
+9. **Gunicorn / WSGI:** use ``module:callable`` (no parentheses on the callable), e.g. ``flaskr:create_app``.
 
 ## Security Rules
 

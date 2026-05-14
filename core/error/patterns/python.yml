@@ -36,3 +36,9 @@ patterns:
     fix_strategy: add_system_package
     fix_alpine: postgresql-dev
     fix_debian: libpq-dev
+
+  - name: gunicorn_app_import_or_uri
+    regex: "(?i)gunicorn\\.errors\\.AppImportError|Failed to find (?:application|attribute)|class uri .*invalid|Invalid uri.*gunicorn|must be a string.*module:callable|Error:.*does not exist"
+    severity: high
+    auto_fixable: true
+    fix_strategy: ai_fix

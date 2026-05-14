@@ -12,4 +12,4 @@ error: unexpected argument
 The command '/bin/sh -c uv pip sync --system uv.lock' returned a non-zero code: 2
 """
     out = extract_error_lines(log)
-    assert "non-zero" in out.lower() or "uv" in out.lower()
+    assert "non-zero" in out.lower() or "unexpected argument" in out.lower()
