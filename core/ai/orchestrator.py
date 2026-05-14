@@ -167,6 +167,11 @@ def _error_to_dict(err: ClassifiedError) -> dict:
 
 _WORKDIR_LINE_RE = re.compile(r"^\s*WORKDIR\s+(\S+)\s*", re.IGNORECASE)
 
+# Align with ``core/error/patterns/python.yml`` (setuptools_description_file_missing).
+_DESCRIPTION_FILE_RE = re.compile(
+    r"(?i)Description file\s+(\S+)\s+does not exist",
+)
+
 
 def _first_workdir_in_final_stage(lines: list[str], stage_start: int) -> str:
     """First ``WORKDIR`` in the final image stage — setuptools metadata paths are relative to this root."""

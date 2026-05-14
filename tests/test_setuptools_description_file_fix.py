@@ -58,3 +58,10 @@ def test_insert_skips_if_already_present_at_repo_root() -> None:
     )
     out = orch._insert_copy_for_description_file(df, "README.md")
     assert out.count("COPY README.md /app/README.md") == 1
+
+
+def test_description_file_re_matches_setuptools_message() -> None:
+    blob = "Error: Description file README.md does not exist"
+    m = orch._DESCRIPTION_FILE_RE.search(blob)
+    assert m is not None
+    assert m.group(1) == "README.md"
