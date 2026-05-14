@@ -41,6 +41,7 @@ class DockerfileLinter:
         lines = dockerfile.strip().splitlines()
 
         issues.extend(self._check_from_exists(lines))
+        issues.extend(self._check_workdir(lines))
         issues.extend(self._check_no_root(lines))
         issues.extend(self._check_no_latest_tag(lines))
         issues.extend(self._check_expose(lines, port))
@@ -49,6 +50,7 @@ class DockerfileLinter:
         issues.extend(self._check_dangerous_commands(lines))
         issues.extend(self._check_cache_cleanup(lines))
         issues.extend(self._check_gunicorn_wsgi_callable_syntax(lines))
+        issues.extend(self._check_copy_from_stages(lines))
 
         has_errors = any(i.severity == "error" for i in issues)
         fixed = self._apply_auto_fixes(dockerfile, issues) if issues else None
@@ -64,6 +66,59 @@ class DockerfileLinter:
         if not has_from:
             return [LintIssue("DF001", "error", "Dockerfile has no FROM directive")]
         return []
+
+    def _check_workdir(self, lines: list[str]) -> list[LintIssue]:
+        has_workdir = any(line.strip().upper().startswith("WORKDIR ") for line in lines)
+        if not has_workdir:
+            sev = "error" if settings.lint_strict_mode else "warning"
+            return [LintIssue("DF010", sev, "No WORKDIR directive — relative paths may be ambiguous")]
+        return []
+
+    @staticmethod
+    def _from_as_name(line: str) -> str | None:
+        stripped = line.strip()
+        if not stripped.upper().startswith("FROM "):
+            return None
+        m = re.search(r"\s+AS\s+([a-zA-Z0-9_.-]+)\s*$", stripped, re.IGNORECASE)
+        return m.group(1) if m else None
+
+    def _check_copy_from_stages(self, lines: list[str]) -> list[LintIssue]:
+        """Validate ``COPY --from=`` against ``FROM ... AS`` stage names (heuristic)."""
+        stage_names: list[str] = []
+        for line in lines:
+            name = self._from_as_name(line)
+            if name:
+                stage_names.append(name)
+        if not stage_names and not any(
+            re.search(r"(?i)COPY\s+--from=", ln) for ln in lines
+        ):
+            return []
+        issues: list[LintIssue] = []
+        stage_set = set(stage_names)
+        for i, line in enumerate(lines, 1):
+            m = re.search(r"(?i)COPY\s+--from=([^\s]+)", line.strip())
+            if not m:
+                continue
+            ref = m.group(1).strip().strip("\"'")
+            if ref.isdigit():
+                continue
+            rl = ref.lower()
+            if rl in ("scratch", "self", "buildcontext"):
+                continue
+            if any(c in ref for c in ("/", ":", "@")):
+                continue
+            if ref in stage_set:
+                continue
+            issues.append(
+                LintIssue(
+                    "DF011",
+                    "warning",
+                    f"COPY --from={ref!r} does not match a named stage "
+                    f"({', '.join(sorted(stage_set))}) and does not look like an image reference",
+                    line=i,
+                ),
+            )
+        return issues
 
     def _check_no_root(self, lines: list[str]) -> list[LintIssue]:
         has_user = any(line.strip().upper().startswith("USER ") for line in lines)

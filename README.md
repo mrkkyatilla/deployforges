@@ -148,6 +148,7 @@ Uses `curl` without `-f`, handles `429`, and avoids `set -u` issues with an empt
 | `DF_AI_GENERATION_OUTPUT_FLOOR_MONOREPO_TOKENS` | No | Same for monorepo / multi-deps fingerprints (default 8192). |
 | `DF_AI_GENERATION_USE_FLASH_FOR_SIMPLE` | No | When true, non–high-complexity fingerprints use Flash for **legacy** single-shot JSON generation only. |
 | `DF_AI_JSON_REPAIR_SECOND_ATTEMPT_ENABLED` | No | When true (default), JSON repair retries once with a tail-focused Flash prompt. |
+| `DF_AI_DOCKERFILE_PIPELINE_MODE` | No | `legacy` (default): honor `DF_AI_DOCKERFILE_PLAN_*` and `DF_AI_DOCKERFILE_CRITIC_REFINE_ENABLED` globally. `auto`: pick **minimal** / **standard** / **thorough** from the fingerprint (confidence, monorepo, service count, lockfile, multi-surface repo tree) to toggle plan, plan JSON repair, critic vs critic+refine, and second JSON repair per project. |
 | `DF_GEMINI_FILES_API_PROMPT_TOKEN_THRESHOLD` | No | Reserved: future Files API for huge prompts. **0** = disabled (no runtime behavior yet). |
 | `DF_AI_DOCKERFILE_CRITIC_REFINE_ENABLED` | No | When true, runs critic + optional one-shot **refine** after generation (extra tokens). |
 | `DF_REPORTER_LLM_ENABLED` | No | When true, ``POST /api/v1/admin/reporter/run`` may call Gemini on **aggregate** metrics only. |

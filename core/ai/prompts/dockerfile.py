@@ -2,7 +2,32 @@ import json
 from typing import Any
 
 from api.config import settings
+from core.ai.dockerfile_pipeline_policy import extract_stage_names_from_dockerfile_template
 from core.ai.package_install_matrix import format_matrix_for_prompt
+
+
+def _skeleton_contract_section(template: str | None) -> str:
+    """Prompt block: treat stock template as a structural contract for the model."""
+    if not template or not template.strip():
+        return ""
+    stages = extract_stage_names_from_dockerfile_template(template)
+    stage_line = ""
+    if stages:
+        stage_line = (
+            f"Named stages in the skeleton (preserve ``COPY --from=`` targets): "
+            f"**{', '.join(stages)}**.\n"
+        )
+    return (
+        "\n## Skeleton contract (mandatory when a skeleton is provided)\n"
+        "- Keep the same multi-stage **FROM** / **AS** structure and stage order as the skeleton "
+        "unless the fingerprint clearly contradicts it.\n"
+        "- Preserve **WORKDIR** per stage as in the skeleton unless fixing a broken path.\n"
+        "- Keep dependency **COPY** then **RUN** install ordering for layer cache; adjust only "
+        "what the project needs (versions, flags, missing system or language packages).\n"
+        "- Prefer changing project-specific **RUN**, application **COPY**, **CMD**/**ENTRYPOINT**, "
+        "**EXPOSE**, and **HEALTHCHECK** over reshuffling the skeleton.\n"
+        f"{stage_line}"
+    )
 
 
 def _append_python_matrix(project_path: str | None, fingerprint: dict | None, sections: list[str]) -> None:
@@ -52,6 +77,7 @@ def build_generation_prompt(
         sections.append("## Skeleton Template\n")
         sections.append("Use this as a starting point and customize it for the project:\n")
         sections.append(f"```dockerfile\n{template}\n```\n")
+        sections.append(_skeleton_contract_section(template))
 
     _append_python_matrix(project_path, fingerprint, sections)
 
@@ -95,6 +121,7 @@ def build_generation_metadata_prompt(
         sections.append("## Skeleton Template\n")
         sections.append("Use this as a starting point and customize it for the project:\n")
         sections.append(f"```dockerfile\n{template}\n```\n")
+        sections.append(_skeleton_contract_section(template))
 
     _append_python_matrix(project_path, fingerprint, sections)
 
@@ -130,6 +157,7 @@ def build_dockerfile_body_only_prompt(
         sections.append("## Skeleton Template\n```dockerfile\n")
         sections.append(template or "")
         sections.append("\n```\n")
+        sections.append(_skeleton_contract_section(template))
 
     _append_python_matrix(project_path, fingerprint, sections)
 

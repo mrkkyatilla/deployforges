@@ -49,8 +49,11 @@ async def repair_model_json(
     response_schema: Any,
     io_log_label: str,
     parsed_dict: dict[str, Any] | None = None,
+    second_attempt_enabled: bool | None = None,
 ) -> tuple[dict[str, Any] | None, AIResponse | None]:
     """Try fast local JSON recovery; only if that fails, ask Flash for valid JSON.
+
+    ``second_attempt_enabled``: when ``None``, uses ``settings.ai_json_repair_second_attempt_enabled``.
 
     Returns ``(dict, None)`` when local recovery succeeds (no LLM call).
     """
@@ -110,7 +113,12 @@ async def repair_model_json(
         _masked_excerpt(resp.text or ""),
     )
 
-    if not settings.ai_json_repair_second_attempt_enabled:
+    allow_second = (
+        settings.ai_json_repair_second_attempt_enabled
+        if second_attempt_enabled is None
+        else second_attempt_enabled
+    )
+    if not allow_second:
         return None, resp
 
     can2, allowed2 = token_budget.can_spend(spend_step)

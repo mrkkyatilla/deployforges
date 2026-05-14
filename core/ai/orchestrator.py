@@ -23,6 +23,11 @@ from core.ai.pipeline_timing import (
 )
 from core.ai.dockerfile_generator import DockerfileGenerator, DockerfileResult, FixResult
 from core.ai.dockerfile_linter import DockerfileLinter
+from core.ai.dockerfile_pipeline_policy import (
+    DockerfilePipelinePolicy,
+    policy_from_dict,
+    resolve_dockerfile_pipeline_policy,
+)
 from core.ai.gemini_client import GeminiClient, is_transient_gemini_http_error
 from core.ai.pipeline_errors import TransientGeminiError
 from core.ai.gemini_json_repair import repair_model_json
@@ -51,6 +56,18 @@ from db.session import async_session_factory
 logger = logging.getLogger(__name__)
 
 
+def _effective_pipeline_policy(state: DeployForgeState) -> DockerfilePipelinePolicy:
+    raw = state.get("dockerfile_pipeline_policy")
+    if isinstance(raw, dict) and raw:
+        p = policy_from_dict(raw)
+        if p is not None:
+            return p
+    fp = dict(state.get("fingerprint") or {})
+    if state.get("analysis_confidence") is not None:
+        fp["confidence"] = float(state["analysis_confidence"])
+    return resolve_dockerfile_pipeline_policy(fp, settings)
+
+
 # ---------------------------------------------------------------------------
 # State definition
 # ---------------------------------------------------------------------------
@@ -75,6 +92,7 @@ class DeployForgeState(TypedDict):
     ai_warnings: Annotated[list[str], operator.add]
     lint_passed: bool
     dockerfile_critic: dict[str, Any]
+    dockerfile_pipeline_policy: dict[str, Any]
 
     # Build
     build_attempts: Annotated[list[dict], operator.add]
@@ -459,6 +477,7 @@ async def ai_analyze_node(state: DeployForgeState) -> dict[str, Any]:
         new_confidence = float(ai_result.get("confidence", new_confidence))
         raw_warnings = ai_result.get("warnings", [])
         ai_warnings = raw_warnings if isinstance(raw_warnings, list) else []
+        merged_fp["confidence"] = new_confidence
     else:
         logger.error("Failed to parse AI analysis response after repair")
         ai_warnings = ["AI analysis response was not valid JSON"]
@@ -506,10 +525,16 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
     client = GeminiClient()
     generator = DockerfileGenerator(client)
 
+    fp = dict(state["fingerprint"])
+    if state.get("analysis_confidence") is not None:
+        fp["confidence"] = float(state["analysis_confidence"])
+    pipeline_policy = resolve_dockerfile_pipeline_policy(fp, settings)
+
     gen_result: DockerfileResult = await generator.generate(
         fingerprint=state["fingerprint"],
         project_path=state["project_path"],
         token_budget=token_budget,
+        pipeline_policy=pipeline_policy,
     )
 
     gen_extra = (
@@ -579,6 +604,8 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
                 tokens_at_start=ts0,
                 tokens_at_end=token_budget.spent,
             ),
+            "pipeline_tier": pipeline_policy.tier,
+            "pipeline_mode": pipeline_policy.mode,
         },
     )
 
@@ -587,6 +614,7 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
         "current_dockerignore": gen_result.dockerignore,
         "ai_warnings": gen_result.warnings,
         "dockerfile_critic": {},
+        "dockerfile_pipeline_policy": pipeline_policy.to_dict(),
         "total_tokens_used": token_budget.spent,
         "token_breakdown": token_budget.breakdown,
         "pipeline_step_timings": [
@@ -608,10 +636,12 @@ async def dockerfile_critic_node(state: DeployForgeState) -> dict[str, Any]:
     client = GeminiClient()
     generator = DockerfileGenerator(client)
     spent_before = token_budget.breakdown.get("dockerfile_critic", 0)
+    pol = _effective_pipeline_policy(state)
     critic = await generator.run_critic(
         state["current_dockerfile"],
         state["fingerprint"],
         token_budget,
+        pipeline_policy=pol,
     )
     critic_tokens = max(0, token_budget.breakdown.get("dockerfile_critic", 0) - spent_before)
     critic_extra = None
@@ -654,7 +684,8 @@ async def dockerfile_refine_node(state: DeployForgeState) -> dict[str, Any]:
     pid = state["project_id"]
     critic = state.get("dockerfile_critic") or {}
     issues = critic.get("issues") or []
-    if not settings.ai_dockerfile_critic_refine_enabled or not issues:
+    pol = _effective_pipeline_policy(state)
+    if not pol.refine_enabled or not issues:
         await _emit(pid, "step_complete", {"step": "dockerfile_refine", "skipped": True})
         return {}
 
@@ -670,6 +701,7 @@ async def dockerfile_refine_node(state: DeployForgeState) -> dict[str, Any]:
             fingerprint=state["fingerprint"],
             project_path=state["project_path"],
             token_budget=token_budget,
+            pipeline_policy=pol,
         )
     except Exception as exc:
         logger.exception("dockerfile_refine failed for project %s", pid)
@@ -714,7 +746,8 @@ async def dockerfile_refine_node(state: DeployForgeState) -> dict[str, Any]:
 
 
 def route_after_dockerfile_critic(state: DeployForgeState) -> str:
-    if not settings.ai_dockerfile_critic_refine_enabled:
+    pol = _effective_pipeline_policy(state)
+    if not pol.refine_enabled:
         return "to_lint"
     issues = (state.get("dockerfile_critic") or {}).get("issues") or []
     if not issues:
@@ -1152,6 +1185,7 @@ async def ai_fix_build_node(state: DeployForgeState) -> dict[str, Any]:
 
     client = GeminiClient()
     generator = DockerfileGenerator(client)
+    pol = _effective_pipeline_policy(state)
     fix_result: FixResult = await generator.fix(
         dockerfile=state["current_dockerfile"],
         error_context=error_context,
@@ -1159,6 +1193,7 @@ async def ai_fix_build_node(state: DeployForgeState) -> dict[str, Any]:
         attempt_number=attempt,
         token_budget=token_budget,
         project_path=state.get("project_path"),
+        pipeline_policy=pol,
     )
 
     fix_extra = (
@@ -1547,6 +1582,8 @@ async def run_pipeline(project_id: UUID) -> None:
         "token_breakdown": {},
 
         "pipeline_step_timings": [],
+
+        "dockerfile_pipeline_policy": {},
 
         "final_status": "",
         "final_dockerfile": "",

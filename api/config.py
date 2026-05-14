@@ -101,6 +101,9 @@ class Settings(BaseSettings):
     ai_generation_use_flash_for_simple: bool = False
     # After first Flash JSON repair failure, retry once with a shorter tail-focused prompt.
     ai_json_repair_second_attempt_enabled: bool = True
+    # Dockerfile AI step gating: ``legacy`` uses the flags above; ``auto`` picks minimal/standard/thorough
+    # tiers from fingerprint (monorepo, services, confidence, lockfile, multi-surface tree, etc.).
+    ai_dockerfile_pipeline_mode: Literal["legacy", "auto"] = "legacy"
     # Reserved: if prompt-side estimated tokens exceed this threshold, consider Gemini Files API
     # (not implemented in code yet; 0 = off). See README "Large repositories".
     gemini_files_api_prompt_token_threshold: int = 0

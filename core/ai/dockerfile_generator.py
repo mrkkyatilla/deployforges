@@ -31,6 +31,10 @@ from core.ai.pipeline_cache import (
     metadata_cache_key,
     plan_cache_key,
 )
+from core.ai.dockerfile_pipeline_policy import (
+    DockerfilePipelinePolicy,
+    resolve_dockerfile_pipeline_policy,
+)
 from core.ai.prompts.dockerfile import (
     build_critic_prompt,
     build_dockerfile_body_only_prompt,
@@ -313,6 +317,7 @@ class DockerfileGenerator:
         response_schema: Any,
         io_label: str,
         parsed_dict: dict[str, Any] | None = None,
+        second_attempt_enabled: bool | None = None,
     ) -> tuple[dict[str, Any] | None, AIResponse | None]:
         return await repair_model_json(
             self.client,
@@ -323,6 +328,7 @@ class DockerfileGenerator:
             response_schema=response_schema,
             io_log_label=io_label,
             parsed_dict=parsed_dict,
+            second_attempt_enabled=second_attempt_enabled,
         )
 
     async def _generate_plan(
@@ -330,8 +336,9 @@ class DockerfileGenerator:
         fingerprint: dict,
         template: str | None,
         token_budget: TokenBudget,
+        policy: DockerfilePipelinePolicy,
     ) -> dict[str, Any] | None:
-        if not settings.ai_dockerfile_plan_enabled:
+        if not policy.plan_enabled:
             return None
         can_spend, allowed = token_budget.can_spend("dockerfile_plan", minimum=400)
         if not can_spend:
@@ -359,7 +366,7 @@ class DockerfileGenerator:
         pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         repair_resp: AIResponse | None = None
-        if data is None and settings.ai_dockerfile_plan_json_repair_enabled:
+        if data is None and policy.plan_json_repair_enabled:
             hint = (
                 "base_image (string), stages (array of strings), copy_strategy (string), "
                 "install_commands_outline (array of strings), cmd (string), "
@@ -373,6 +380,7 @@ class DockerfileGenerator:
                 response_schema=schema,
                 io_label="dockerfile_plan",
                 parsed_dict=response.parsed_dict,
+                second_attempt_enabled=policy.json_repair_second_attempt_enabled,
             )
             if repaired is not None:
                 if repair_resp is not None:
@@ -380,8 +388,8 @@ class DockerfileGenerator:
                 data = repaired
         elif data is None:
             logger.warning(
-                "Dockerfile plan JSON parse failed; repair disabled "
-                "(DF_AI_DOCKERFILE_PLAN_JSON_REPAIR_ENABLED=false) parse_error=%s",
+                "Dockerfile plan JSON parse failed; plan JSON repair disabled by pipeline policy "
+                "parse_error=%s",
                 pr.error,
             )
         elif not _plan_is_usable(data):
@@ -402,11 +410,14 @@ class DockerfileGenerator:
         fingerprint: dict,
         project_path: str,
         token_budget: TokenBudget,
+        *,
+        pipeline_policy: DockerfilePipelinePolicy | None = None,
     ) -> DockerfileResult:
         can_spend, allowed = token_budget.can_spend("generation")
         if not can_spend:
             raise RuntimeError("Token budget exhausted for generation step")
 
+        policy = pipeline_policy or resolve_dockerfile_pipeline_policy(fingerprint, settings)
         if settings.ai_dockerfile_template_first_enabled:
             if fingerprint_allows_template_first(project_path, fingerprint):
                 rendered = render_template_dockerfile(project_path, fingerprint)
@@ -427,6 +438,7 @@ class DockerfileGenerator:
                         "template_first": True,
                         "parse_ok": True,
                         "two_phase": False,
+                        "pipeline_policy": policy.to_dict(),
                     }
                     return result
 
@@ -441,7 +453,9 @@ class DockerfileGenerator:
         )
         enriched_fp = {**fingerprint, "critical_files": critical_files}
 
-        plan: dict[str, Any] | None = await self._generate_plan(enriched_fp, template, token_budget)
+        plan: dict[str, Any] | None = await self._generate_plan(
+            enriched_fp, template, token_budget, policy,
+        )
 
         if settings.ai_dockerfile_two_phase_enabled:
             return await self._generate_two_phase_dockerfile(
@@ -451,6 +465,7 @@ class DockerfileGenerator:
                 token_budget=token_budget,
                 allowed=allowed,
                 project_path=project_path,
+                policy=policy,
             )
         return await self._generate_single_json_dockerfile(
             enriched_fp=enriched_fp,
@@ -459,6 +474,7 @@ class DockerfileGenerator:
             token_budget=token_budget,
             allowed=allowed,
             project_path=project_path,
+            policy=policy,
         )
 
     async def _generate_two_phase_dockerfile(
@@ -470,6 +486,7 @@ class DockerfileGenerator:
         token_budget: TokenBudget,
         allowed: int,
         project_path: str,
+        policy: DockerfilePipelinePolicy,
     ) -> DockerfileResult:
         meta_schema = schema_dockerfile_generation_metadata()
         max_meta_out = min(6144, _generation_max_output_tokens(allowed, enriched_fp))
@@ -525,6 +542,7 @@ class DockerfileGenerator:
                     response_schema=meta_schema,
                     io_label="dockerfile_generation_metadata",
                     parsed_dict=resp_meta.parsed_dict,
+                    second_attempt_enabled=policy.json_repair_second_attempt_enabled,
                 )
                 if repaired_m is not None:
                     if repair_meta is not None:
@@ -649,6 +667,7 @@ class DockerfileGenerator:
             meta_io["body_prompt_tokens"] = resp_body.prompt_tokens
             meta_io["body_completion_tokens"] = resp_body.completion_tokens
             meta_io["body_total_tokens"] = resp_body.total_tokens
+        meta_io["pipeline_policy"] = policy.to_dict()
         result.io_meta = meta_io
         _warn_if_sparse_comments(result.dockerfile)
         return result
@@ -662,6 +681,7 @@ class DockerfileGenerator:
         token_budget: TokenBudget,
         allowed: int,
         project_path: str,
+        policy: DockerfilePipelinePolicy,
     ) -> DockerfileResult:
         prompt = build_generation_prompt(
             enriched_fp, template, plan=plan, project_path=project_path,
@@ -701,6 +721,7 @@ class DockerfileGenerator:
                 response_schema=schema,
                 io_label="dockerfile_generation",
                 parsed_dict=response.parsed_dict,
+                second_attempt_enabled=policy.json_repair_second_attempt_enabled,
             )
             if repaired is not None:
                 if repair_resp is not None:
@@ -739,6 +760,7 @@ class DockerfileGenerator:
             response2=repair_resp,
         )
         result.io_meta["two_phase"] = False
+        result.io_meta["pipeline_policy"] = policy.to_dict()
         _warn_if_sparse_comments(result.dockerfile)
         return result
 
@@ -747,9 +769,12 @@ class DockerfileGenerator:
         dockerfile: str,
         fingerprint: dict,
         token_budget: TokenBudget,
+        *,
+        pipeline_policy: DockerfilePipelinePolicy | None = None,
     ) -> dict[str, Any]:
         """Return {summary, issues} from model; empty issues if disabled or parse failure."""
-        if not settings.ai_dockerfile_critic_refine_enabled:
+        pol = pipeline_policy or resolve_dockerfile_pipeline_policy(fingerprint, settings)
+        if not pol.critic_enabled:
             return {"summary": "", "issues": []}
         can_spend, allowed = token_budget.can_spend("dockerfile_critic", minimum=400)
         if not can_spend:
@@ -788,7 +813,9 @@ class DockerfileGenerator:
         fingerprint: dict,
         project_path: str,
         token_budget: TokenBudget,
+        pipeline_policy: DockerfilePipelinePolicy | None = None,
     ) -> DockerfileResult:
+        pol = pipeline_policy or resolve_dockerfile_pipeline_policy(fingerprint, settings)
         can_spend, allowed = token_budget.can_spend("dockerfile_refine", minimum=500)
         if not can_spend:
             raise RuntimeError("Token budget exhausted for dockerfile_refine step")
@@ -831,6 +858,7 @@ class DockerfileGenerator:
                 response_schema=schema,
                 io_label="dockerfile_refine",
                 parsed_dict=response.parsed_dict,
+                second_attempt_enabled=pol.json_repair_second_attempt_enabled,
             )
             if repaired is not None:
                 if repair_resp is not None:
@@ -867,6 +895,7 @@ class DockerfileGenerator:
             response=response,
             response2=repair_resp,
         )
+        result.io_meta["pipeline_policy"] = pol.to_dict()
         _warn_if_sparse_comments(result.dockerfile)
         return result
 
@@ -879,12 +908,14 @@ class DockerfileGenerator:
         token_budget: TokenBudget,
         *,
         project_path: str | None = None,
+        pipeline_policy: DockerfilePipelinePolicy | None = None,
     ) -> FixResult:
         step = "simple_fix" if attempt_number <= 2 else "complex_fix"
         can_spend, allowed = token_budget.can_spend("fix_attempt")
         if not can_spend:
             raise RuntimeError("Token budget exhausted for fix step")
 
+        pol = pipeline_policy or resolve_dockerfile_pipeline_policy(fingerprint or {}, settings)
         if (
             project_path
             and fingerprint
@@ -949,6 +980,7 @@ class DockerfileGenerator:
                 response_schema=schema,
                 io_label=f"dockerfile_fix_{attempt_number}",
                 parsed_dict=response.parsed_dict,
+                second_attempt_enabled=pol.json_repair_second_attempt_enabled,
             )
             if repaired is not None:
                 if repair_resp is not None:
