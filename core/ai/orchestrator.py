@@ -40,6 +40,7 @@ from core.builder.sandbox import (
 )
 from core.builder.validator import CloudRunValidator
 from core.error.classifier import BuildErrorClassifier, ClassifiedError
+from core.error.parser import extract_error_lines
 from core.security.dockerfile_policy import check_dockerfile_policy
 from core.intake.archive_handler import ArchiveHandler
 from core.intake.git_handler import GitHandler
