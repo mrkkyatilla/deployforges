@@ -49,6 +49,7 @@ services:
     environment:
       DF_DATABASE_URL: postgresql+asyncpg://${DB_USER:-postgres}:${DB_PASSWORD}@db:5432/deployforge
       DF_REDIS_URL: redis://redis:6379/0
+      DF_PIPELINE_ENQUEUE_MODE: celery
     volumes:
       - deployforge_workspace:/tmp/deployforge/workspaces
     depends_on:

@@ -33,6 +33,11 @@ class Settings(BaseSettings):
 
     # --- Redis ---
     redis_url: str = "redis://localhost:6379/0"
+    # How the API starts a pipeline after creating a project:
+    # - celery: always use Celery (503 if broker/worker unavailable).
+    # - auto: try Celery first; on failure run in-process after the HTTP response (local dev friendly).
+    # - background: always run in-process (no Celery; no transient Gemini Celery retries).
+    pipeline_enqueue_mode: Literal["celery", "auto", "background"] = "auto"
 
     # --- Gemini AI ---
     gemini_api_key: str = ""

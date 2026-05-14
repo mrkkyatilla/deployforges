@@ -9,7 +9,7 @@ from uuid import UUID
 
 import aiofiles
 import redis.asyncio as redis
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Query, UploadFile
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +34,7 @@ from api.schemas.project import (
 from core.security.compose_policy import compose_risk_heuristic
 from db.models import AIInteraction, Build, Project
 from db.session import get_db
+from workers.pipeline_enqueue import schedule_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -62,17 +63,6 @@ def _queued_project_payload(project: Project, created_at: datetime) -> dict[str,
     }
 
 
-def _enqueue_pipeline(project_id: UUID) -> None:
-    try:
-        run_pipeline_task.delay(str(project_id))
-    except Exception as exc:
-        logger.exception("Failed to enqueue pipeline for project %s", project_id)
-        raise HTTPException(
-            status_code=503,
-            detail="Could not queue pipeline job (Redis/Celery unavailable).",
-        ) from exc
-
-
 router = APIRouter(prefix="/projects", tags=["projects"])
 
 
@@ -99,6 +89,7 @@ async def _get_user_project(
 @router.post("/", status_code=202)
 async def create_project(
     payload: CreateProjectRequest,
+    background_tasks: BackgroundTasks,
     user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _abuse: None = Depends(check_abuse),
@@ -123,7 +114,7 @@ async def create_project(
     created_at = project.created_at or datetime.now(timezone.utc)
 
     payload = _queued_project_payload(project, created_at)
-    _enqueue_pipeline(project.id)
+    schedule_pipeline(project.id, background_tasks)
 
     return JSONResponse(status_code=202, content=payload)
 
@@ -132,6 +123,7 @@ async def create_project(
 async def upload_project(
     file: UploadFile,
     options: str = Form("{}"),
+    background_tasks: BackgroundTasks,
     user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
     _abuse: None = Depends(check_abuse),
@@ -191,7 +183,7 @@ async def upload_project(
     created_at = project.created_at or datetime.now(timezone.utc)
 
     payload = _queued_project_payload(project, created_at)
-    _enqueue_pipeline(project.id)
+    schedule_pipeline(project.id, background_tasks)
     logger.info("Upload project %s queued (source_type=%s, size=%d bytes)", project.id, source_type, total_written)
 
     return JSONResponse(status_code=202, content=payload)

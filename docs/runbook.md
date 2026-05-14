@@ -15,6 +15,16 @@ These must exceed the worst case of roughly:
 
 `DF_MAX_BUILD_ATTEMPTS × DF_BUILD_TIMEOUT_SECONDS` plus Gemini retries, pre-build checks, and Cloud Run deploy when enabled.
 
+## API: pipeline enqueue (Celery vs in-process)
+
+| `DF_PIPELINE_ENQUEUE_MODE` | Behaviour |
+|---------------------------|-----------|
+| `auto` (default in `.env.example`) | Try Celery first; if Redis/broker is down, run `run_pipeline` in the API process after the HTTP response (no 503 on create). |
+| `celery` | Strict: project creation returns 503 if the task cannot be queued (production stacks with a worker). |
+| `background` | Always run in the API process (no Celery; no worker-side retries for transient Gemini errors). |
+
+Docker Compose VPS sets `DF_PIPELINE_ENQUEUE_MODE=celery` on the **api** service so the worker always receives jobs when Redis is healthy.
+
 ## Build attempts and Docker timeout
 
 | Setting | Default | Notes |

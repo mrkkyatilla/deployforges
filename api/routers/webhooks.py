@@ -6,7 +6,7 @@ import logging
 import secrets
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -23,7 +23,7 @@ from api.schemas.webhook import (
 from core.webhooks import webhook_dispatcher
 from db.models import InboundWebhookConfig, Project, Webhook
 from db.session import get_db
-from workers.build_worker import run_pipeline_task
+from workers.pipeline_enqueue import schedule_pipeline
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +53,7 @@ def _branch_from_ref(ref: str) -> str:
 @router.post("/github")
 async def github_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_hub_signature_256: str | None = Header(None),
     x_github_event: str | None = Header(None),
     db: AsyncSession = Depends(get_db),
@@ -112,7 +113,7 @@ async def github_webhook(
     project.workspace_path = str(settings.workspace_base_path / str(project.id))
     await db.flush()
 
-    run_pipeline_task.delay(str(project.id))
+    schedule_pipeline(project.id, background_tasks)
 
     await webhook_dispatcher.dispatch(
         matched_config.user_id,
@@ -135,6 +136,7 @@ async def github_webhook(
 @router.post("/gitlab")
 async def gitlab_webhook(
     request: Request,
+    background_tasks: BackgroundTasks,
     x_gitlab_token: str | None = Header(None),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
@@ -176,7 +178,7 @@ async def gitlab_webhook(
     project.workspace_path = str(settings.workspace_base_path / str(project.id))
     await db.flush()
 
-    run_pipeline_task.delay(str(project.id))
+    schedule_pipeline(project.id, background_tasks)
 
     await webhook_dispatcher.dispatch(
         matched_config.user_id,
