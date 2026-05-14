@@ -1,0 +1,136 @@
+#!/usr/bin/env bash
+# DeployForge VPS smoke: register (optional) -> create project -> poll -> print Dockerfile.
+# Uses curl WITHOUT -f so 429 bodies are visible. Safe with set -u (DF_TEST_API_KEY defaults to "").
+#
+# Usage:
+#   export BASE=https://deploy.wrupup.com
+#   export DF_TEST_API_KEY=df_live_...   # optional: skip register
+#   export REPO=https://github.com/pallets/flask.git
+#   bash scripts/vps-smoke.sh
+#
+set -euo pipefail
+
+BASE="${BASE:-https://deploy.wrupup.com}"
+REPO="${REPO:-https://github.com/pallets/flask.git}"
+POLL_INTERVAL="${POLL_INTERVAL:-30}"
+MAX_POLLS="${MAX_POLLS:-6}"
+DF_TEST_API_KEY="${DF_TEST_API_KEY:-}"
+export DF_TEST_API_KEY
+
+die() { echo "ERROR: $*" >&2; exit 1; }
+
+# GET/POST JSON API. Writes body to temp file; prints HTTP code on last line of captured output.
+# Returns body via stdout (without code line) — caller uses temp file. Simpler: use global __HTTP_CODE.
+__HTTP_CODE=""
+__BODY_FILE=""
+
+http_request() {
+  local method="$1" url="$2" data="${3:-}"
+  local tmp
+  tmp="$(mktemp)"
+  if [[ "$method" == "GET" ]]; then
+    __HTTP_CODE="$(curl -sS -o "$tmp" -w "%{http_code}" "$url" -H "X-API-Key: ${DF_TEST_API_KEY}")" || true
+  else
+    __HTTP_CODE="$(curl -sS -o "$tmp" -w "%{http_code}" -X "$method" "$url" \
+      -H "X-API-Key: ${DF_TEST_API_KEY}" \
+      -H "Content-Type: application/json" \
+      -d "$data")" || true
+  fi
+  __BODY_FILE="$tmp"
+}
+
+read_body() {
+  cat "$__BODY_FILE"
+}
+
+cleanup_body() {
+  rm -f "$__BODY_FILE"
+  __BODY_FILE=""
+}
+
+if [[ -z "$DF_TEST_API_KEY" ]]; then
+  echo ">>> Kayıt (1 istek) — sonra: export DF_TEST_API_KEY='...' ile tekrar çalıştırın"
+  http_request POST "${BASE}/api/v1/auth/register" "{\"email\":\"smoke-$(date +%s)@example.com\"}"
+  if [[ "$__HTTP_CODE" == "429" ]]; then
+    read_body >&2
+    cleanup_body
+    die "Rate limit (429) — bekle veya DF_RATE_LIMIT_FREE artır / yeni saat penceresi"
+  fi
+  if [[ "$__HTTP_CODE" != "2"* ]]; then
+    read_body >&2
+    cleanup_body
+    die "register HTTP $__HTTP_CODE"
+  fi
+  DF_TEST_API_KEY="$(read_body | python3 -c "import sys,json; print(json.load(sys.stdin)['api_key'])")"
+  export DF_TEST_API_KEY
+  cleanup_body
+  echo ">>> API key (başlangıç): ${DF_TEST_API_KEY:0:32}..."
+else
+  echo ">>> Mevcut DF_TEST_API_KEY kullanılıyor"
+fi
+
+echo ">>> Proje oluştur: $REPO"
+http_request POST "${BASE}/api/v1/projects/" "{\"source\":{\"type\":\"git\",\"url\":\"${REPO}\"}}"
+if [[ "$__HTTP_CODE" == "429" ]]; then
+  read_body >&2
+  cleanup_body
+  die "Rate limit (429)"
+fi
+if [[ "$__HTTP_CODE" != "2"* ]]; then
+  read_body >&2
+  cleanup_body
+  die "create project HTTP $__HTTP_CODE"
+fi
+PID="$(read_body | python3 -c "import sys,json; print(json.load(sys.stdin)['id'])")"
+cleanup_body
+echo ">>> PID=$PID"
+
+ST="unknown"
+for i in $(seq 1 "$MAX_POLLS"); do
+  http_request GET "${BASE}/api/v1/projects/${PID}"
+  if [[ "$__HTTP_CODE" == "429" ]]; then
+    read_body >&2
+    cleanup_body
+    die "Rate limit (429) during poll"
+  fi
+  if [[ "$__HTTP_CODE" != "2"* ]]; then
+    read_body >&2
+    cleanup_body
+    die "poll HTTP $__HTTP_CODE"
+  fi
+  ST="$(read_body | python3 -c "import sys,json; print(json.load(sys.stdin)['status'])")"
+  cleanup_body
+  echo "[${i}/${MAX_POLLS}] status=$ST"
+  if [[ "$ST" == "success" || "$ST" == "failed" ]]; then
+    break
+  fi
+  sleep "$POLL_INTERVAL"
+done
+
+if [[ "$ST" != "success" && "$ST" != "failed" ]]; then
+  die "Zaman aşımı — MAX_POLLS veya POLL_INTERVAL artırın; celery-worker loglarına bakın"
+fi
+
+echo ">>> Sonuç"
+http_request GET "${BASE}/api/v1/projects/${PID}/result"
+if [[ "$__HTTP_CODE" != "2"* ]]; then
+  read_body >&2
+  cleanup_body
+  die "result HTTP $__HTTP_CODE"
+fi
+read_body | python3 -c "
+import sys, json
+r = json.load(sys.stdin)
+print('status:', r.get('status'))
+res = r.get('result') or {}
+df = res.get('dockerfile')
+if df:
+    print()
+    print('========== Dockerfile ==========')
+    print(df)
+else:
+    print('Dockerfile yok.')
+    print(json.dumps(r, indent=2)[:8000])
+"
+cleanup_body
+echo ">>> Bitti"

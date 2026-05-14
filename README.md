@@ -94,6 +94,16 @@ curl http://localhost:8000/api/v1/projects/{id}/result \
 
 ```
 
+### VPS / production smoke (repo → Dockerfile)
+
+From repo root (set `BASE` and optional `DF_TEST_API_KEY`):
+
+```bash
+BASE=https://your-api.example.com bash scripts/vps-smoke.sh
+```
+
+Uses `curl` without `-f`, handles `429`, and avoids `set -u` issues with an empty API key before register.
+
 ---
 
 ## Requirements
