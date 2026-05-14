@@ -22,7 +22,7 @@ from core.ai.gemini_client import GeminiClient, is_transient_gemini_http_error
 from core.ai.pipeline_errors import TransientGeminiError
 from core.ai.gemini_json_repair import repair_model_json
 from core.ai.gemini_schemas import schema_ai_analysis
-from core.ai.json_response import parse_model_json
+from core.ai.json_response import ParseResult, parse_model_json_from_ai_response
 from core.ai.prompts.analysis import AI_ANALYSIS_SYSTEM_PROMPT, build_ai_analysis_prompt
 from core.ai.token_manager import TokenBudget
 from core.analysis.engine import AnalysisEngine
@@ -314,7 +314,7 @@ async def ai_analyze_node(state: DeployForgeState) -> dict[str, Any]:
 
     token_budget.record("analysis", response.total_tokens)
 
-    pr = parse_model_json(response.text)
+    pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
     ai_result = pr.data
     repair_resp = None
     pr2 = None
@@ -333,10 +333,14 @@ async def ai_analyze_node(state: DeployForgeState) -> dict[str, Any]:
             spend_step="analysis",
             response_schema=schema_ai_analysis(),
             io_log_label="ai_analysis",
+            parsed_dict=response.parsed_dict,
         )
-        if repaired is not None and repair_resp.text:
-            token_budget.record("analysis", repair_resp.total_tokens)
-            pr2 = parse_model_json(repair_resp.text)
+        if repaired is not None:
+            if repair_resp is not None:
+                token_budget.record("analysis", repair_resp.total_tokens)
+                pr2 = parse_model_json_from_ai_response(repair_resp.text, repair_resp.parsed_dict)
+            else:
+                pr2 = ParseResult(repaired, "local_json_recovery", response.text, None)
             ai_result = repaired
 
     extra = build_ai_interaction_extra(

@@ -14,7 +14,7 @@ from core.ai.gemini_schemas import (
     schema_dockerfile_generation,
     schema_dockerfile_plan,
 )
-from core.ai.json_response import parse_model_json
+from core.ai.json_response import ParseResult, parse_model_json_from_ai_response
 from core.ai.prompts.dockerfile import (
     build_critic_prompt,
     build_fix_prompt,
@@ -176,7 +176,8 @@ class DockerfileGenerator:
         spend_step: str,
         response_schema: Any,
         io_label: str,
-    ) -> tuple[dict[str, Any] | None, AIResponse]:
+        parsed_dict: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any] | None, AIResponse | None]:
         return await repair_model_json(
             self.client,
             broken_text=broken_text,
@@ -185,6 +186,7 @@ class DockerfileGenerator:
             spend_step=spend_step,
             response_schema=response_schema,
             io_log_label=io_label,
+            parsed_dict=parsed_dict,
         )
 
     async def _generate_plan(
@@ -210,10 +212,10 @@ class DockerfileGenerator:
             io_log_label="dockerfile_plan",
         )
         token_budget.record("dockerfile_plan", response.total_tokens)
-        pr = parse_model_json(response.text)
+        pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         repair_resp: AIResponse | None = None
-        if data is None or not _plan_is_usable(data):
+        if data is None:
             hint = (
                 "base_image (string), stages (array of strings), copy_strategy (string), "
                 "install_commands_outline (array of strings), cmd (string), "
@@ -226,10 +228,16 @@ class DockerfileGenerator:
                 spend_step="dockerfile_plan",
                 response_schema=schema,
                 io_label="dockerfile_plan",
+                parsed_dict=response.parsed_dict,
             )
-            if repaired is not None and repair_resp.text:
-                token_budget.record("dockerfile_plan", repair_resp.total_tokens)
+            if repaired is not None:
+                if repair_resp is not None:
+                    token_budget.record("dockerfile_plan", repair_resp.total_tokens)
                 data = repaired
+        elif not _plan_is_usable(data):
+            logger.warning(
+                "Dockerfile plan JSON parsed but unusable; skipping LLM JSON repair",
+            )
         if data is None or not _plan_is_usable(data):
             logger.warning(
                 "Dockerfile plan step failed or unusable; continuing without plan parse_error=%s",
@@ -272,16 +280,13 @@ class DockerfileGenerator:
         )
         token_budget.record("generation", response.total_tokens)
 
-        pr = parse_model_json(response.text)
+        pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         repair_resp: AIResponse | None = None
         pr2 = None
 
-        if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
-            if data is None:
-                logger.error("Generation JSON parse failed: %s", pr.error)
-            else:
-                logger.error("Generation produced empty or non-Dockerfile content")
+        if data is None:
+            logger.error("Generation JSON parse failed: %s", pr.error)
             hint = (
                 "analysis_summary (string), dockerfile (string), dockerignore (string), "
                 "warnings (array of strings), exposed_ports (array of integers), "
@@ -295,11 +300,22 @@ class DockerfileGenerator:
                 spend_step="generation",
                 response_schema=schema,
                 io_label="dockerfile_generation",
+                parsed_dict=response.parsed_dict,
             )
-            if repaired is not None and repair_resp.text:
-                token_budget.record("generation", repair_resp.total_tokens)
-                pr2 = parse_model_json(repair_resp.text)
+            if repaired is not None:
+                if repair_resp is not None:
+                    token_budget.record("generation", repair_resp.total_tokens)
+                    pr2 = parse_model_json_from_ai_response(
+                        repair_resp.text, repair_resp.parsed_dict
+                    )
+                else:
+                    pr2 = ParseResult(repaired, "local_json_recovery", response.text, None)
                 data = repaired
+        elif not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
+            logger.error(
+                "Generation produced empty or non-Dockerfile content (JSON parse OK); "
+                "skipping LLM JSON repair",
+            )
 
         if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
             repair_err = f"; repair_parse={pr2.error!s}" if pr2 is not None else ""
@@ -310,7 +326,7 @@ class DockerfileGenerator:
 
         total_tok = response.total_tokens + (repair_resp.total_tokens if repair_resp else 0)
         result = self._result_from_generation_dict(data, total_tok)
-        parse_second = pr2 if repair_resp is not None else None
+        parse_second = pr2
         result.io_meta = _io_meta(
             interaction="generation",
             parse_ok=True,
@@ -346,7 +362,7 @@ class DockerfileGenerator:
             io_log_label="dockerfile_critic",
         )
         token_budget.record("dockerfile_critic", response.total_tokens)
-        pr = parse_model_json(response.text)
+        pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         if data is None:
             logger.warning("Dockerfile critic JSON parse failed: %s", pr.error)
@@ -390,11 +406,11 @@ class DockerfileGenerator:
             io_log_label="dockerfile_refine",
         )
         token_budget.record("dockerfile_refine", response.total_tokens)
-        pr = parse_model_json(response.text)
+        pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         repair_resp: AIResponse | None = None
         pr2 = None
-        if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
+        if data is None:
             hint = (
                 "analysis_summary (string), dockerfile (string), dockerignore (string), "
                 "warnings (array of strings), exposed_ports (array of integers), "
@@ -408,19 +424,31 @@ class DockerfileGenerator:
                 spend_step="dockerfile_refine",
                 response_schema=schema,
                 io_label="dockerfile_refine",
+                parsed_dict=response.parsed_dict,
             )
-            if repaired is not None and repair_resp.text:
-                token_budget.record("dockerfile_refine", repair_resp.total_tokens)
-                pr2 = parse_model_json(repair_resp.text)
+            if repaired is not None:
+                if repair_resp is not None:
+                    token_budget.record("dockerfile_refine", repair_resp.total_tokens)
+                    pr2 = parse_model_json_from_ai_response(
+                        repair_resp.text, repair_resp.parsed_dict
+                    )
+                else:
+                    pr2 = ParseResult(repaired, "local_json_recovery", response.text, None)
                 data = repaired
+        elif not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
+            logger.error(
+                "Dockerfile refine produced empty or non-Dockerfile content (JSON parse OK); "
+                "skipping LLM JSON repair",
+            )
         if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
+            repair_err = f"; repair_parse={pr2.error!s}" if pr2 is not None else ""
             raise RuntimeError(
                 "AI Dockerfile refine-from-critic returned no valid JSON Dockerfile after repair. "
-                f"parse_error={pr.error!s}"
+                f"parse_error={pr.error!s}{repair_err}"
             )
         total_tok = response.total_tokens + (repair_resp.total_tokens if repair_resp else 0)
         result = self._result_from_generation_dict(data, total_tok)
-        parse_second = pr2 if repair_resp is not None else None
+        parse_second = pr2
         result.io_meta = _io_meta(
             interaction="dockerfile_refine",
             parse_ok=True,
@@ -465,12 +493,12 @@ class DockerfileGenerator:
 
         token_budget.record(f"fix_attempt_{attempt_number}", response.total_tokens)
 
-        pr = parse_model_json(response.text)
+        pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         repair_resp: AIResponse | None = None
         pr2 = None
 
-        if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
+        if data is None:
             hint = (
                 "analysis_summary (string), dockerfile (string), dockerignore (string), "
                 "warnings (array of strings), changes_made (array of strings)"
@@ -482,21 +510,33 @@ class DockerfileGenerator:
                 spend_step="fix_attempt",
                 response_schema=schema,
                 io_label=f"dockerfile_fix_{attempt_number}",
+                parsed_dict=response.parsed_dict,
             )
-            if repaired is not None and repair_resp.text:
-                token_budget.record(f"fix_attempt_{attempt_number}", repair_resp.total_tokens)
-                pr2 = parse_model_json(repair_resp.text)
+            if repaired is not None:
+                if repair_resp is not None:
+                    token_budget.record(f"fix_attempt_{attempt_number}", repair_resp.total_tokens)
+                    pr2 = parse_model_json_from_ai_response(
+                        repair_resp.text, repair_resp.parsed_dict
+                    )
+                else:
+                    pr2 = ParseResult(repaired, "local_json_recovery", response.text, None)
                 data = repaired
+        elif not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
+            logger.error(
+                "Dockerfile fix produced empty or non-Dockerfile content (JSON parse OK); "
+                "skipping LLM JSON repair",
+            )
 
         if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
+            repair_err = f"; repair_parse={pr2.error!s}" if pr2 is not None else ""
             raise RuntimeError(
                 f"AI Dockerfile fix returned no valid JSON Dockerfile (attempt {attempt_number}). "
-                f"parse_error={pr.error!s}"
+                f"parse_error={pr.error!s}{repair_err}"
             )
 
         total_tok = response.total_tokens + (repair_resp.total_tokens if repair_resp else 0)
         result = self._result_from_fix_dict(data, total_tok)
-        parse_second = pr2 if repair_resp is not None else None
+        parse_second = pr2
         result.io_meta = _io_meta(
             interaction=f"fix_attempt_{attempt_number}",
             parse_ok=True,

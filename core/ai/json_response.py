@@ -108,6 +108,60 @@ def parse_model_json(text: str) -> ParseResult:
     return ParseResult(None, "failed", raw_text, last_err)
 
 
+def parse_model_json_from_ai_response(
+    text: str,
+    parsed_dict: dict | None,
+) -> ParseResult:
+    """Prefer string parse; if it fails and Gemini SDK filled ``parsed``, use that dict."""
+    pr = parse_model_json(text)
+    if pr.data is not None:
+        return pr
+    if parsed_dict is not None and isinstance(parsed_dict, dict):
+        return ParseResult(parsed_dict, "sdk_parsed", text or "", None)
+    return pr
+
+
+def try_recover_dict_with_raw_decode(text: str) -> ParseResult | None:
+    """If the string contains a complete leading JSON object, decode it (ignores trailing junk)."""
+    decoder = json.JSONDecoder()
+    raw = (text or "").strip()
+    if not raw:
+        return None
+    candidates: list[str] = [raw]
+    fenced = strip_markdown_json_fence(raw)
+    if fenced.strip() != raw:
+        candidates.append(fenced.strip())
+    for cand in candidates:
+        cand = cand.strip()
+        if not cand:
+            continue
+        start = cand.find("{")
+        if start < 0:
+            continue
+        tail = cand[start:]
+        try:
+            obj, _end = decoder.raw_decode(tail)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return ParseResult(obj, "raw_decode_prefix", text or "", None)
+    return None
+
+
+def parse_model_json_with_local_recovery(
+    text: str,
+    parsed_dict: dict | None,
+) -> ParseResult:
+    """Full local path: AI response parse, then ``raw_decode`` salvage (no LLM)."""
+    pr = parse_model_json_from_ai_response(text, parsed_dict)
+    if pr.data is not None:
+        return pr
+    recovered = try_recover_dict_with_raw_decode(text or "")
+    if recovered is not None:
+        return recovered
+    return pr
+
+
 def truncate_for_log(text: str, max_chars: int, *, head_frac: float = 0.5) -> str:
     """Return head + tail excerpt when text exceeds max_chars."""
     if max_chars <= 0 or len(text) <= max_chars:

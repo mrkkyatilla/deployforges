@@ -8,7 +8,7 @@ import yaml
 from core.ai.gemini_client import GeminiClient
 from core.ai.gemini_json_repair import repair_model_json
 from core.ai.gemini_schemas import schema_compose_generation
-from core.ai.json_response import parse_model_json
+from core.ai.json_response import parse_model_json_from_ai_response
 from core.ai.token_manager import TokenBudget, estimate_tokens, select_model_for_step
 
 logger = logging.getLogger(__name__)
@@ -369,7 +369,7 @@ class ComposeGenerator:
             )
             return yml, 0
 
-        pr = parse_model_json(response.text)
+        pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
         data = pr.data
         total_tok = response.total_tokens
         repair_resp = None
@@ -384,10 +384,11 @@ class ComposeGenerator:
                 spend_step="compose",
                 response_schema=schema,
                 io_log_label="compose_generation",
+                parsed_dict=response.parsed_dict,
             )
             if repaired is not None:
                 data = repaired
-                if repair_resp.text:
+                if repair_resp is not None:
                     total_tok += repair_resp.total_tokens
 
         if not isinstance(data, dict):

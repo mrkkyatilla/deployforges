@@ -13,7 +13,7 @@ from sqlalchemy import func, select
 from api.config import settings
 from core.ai.gemini_client import GeminiClient
 from core.ai.gemini_schemas import schema_reporter_analysis
-from core.ai.json_response import parse_model_json
+from core.ai.json_response import parse_model_json_from_ai_response
 from core.monitoring import TokenMonitor
 from db.models import AIInteraction
 from db.session import async_session_factory
@@ -180,7 +180,7 @@ async def run_reporter_report(
         response_schema=schema_reporter_analysis(),
         io_log_label="admin_reporter",
     )
-    pr = parse_model_json(response.text)
+    pr = parse_model_json_from_ai_response(response.text, response.parsed_dict)
     llm_out: dict[str, Any] | None = pr.data if isinstance(pr.data, dict) else None
     if llm_out is None:
         logger.warning("Reporter LLM parse failed: %s", pr.error)

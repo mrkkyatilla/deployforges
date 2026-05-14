@@ -27,6 +27,8 @@ class AIResponse:
     latency_ms: int
     excerpt_prompt: str | None = None
     excerpt_response: str | None = None
+    # When Gemini SDK fills ``response.parsed`` for schema/JSON mode, mirrored here for parsers.
+    parsed_dict: dict[str, Any] | None = None
 
 
 def is_transient_gemini_http_error(exc: BaseException | None) -> bool:
@@ -249,6 +251,20 @@ class GeminiClient:
         elapsed_ms = (time.perf_counter_ns() - start) // 1_000_000
         usage = response.usage_metadata
 
+        parsed_raw = getattr(response, "parsed", None)
+        parsed_dict: dict[str, Any] | None = None
+        if isinstance(parsed_raw, dict):
+            parsed_dict = parsed_raw
+        else:
+            md = getattr(parsed_raw, "model_dump", None)
+            if callable(md):
+                try:
+                    dumped = md()
+                    if isinstance(dumped, dict):
+                        parsed_dict = dumped
+                except Exception:
+                    pass
+
         ep, er = self._maybe_excerpts(prompt, text)
         self._maybe_log_io(
             label=io_log_label or "gemini",
@@ -266,6 +282,7 @@ class GeminiClient:
             latency_ms=elapsed_ms,
             excerpt_prompt=ep,
             excerpt_response=er,
+            parsed_dict=parsed_dict,
         )
 
     async def generate(
