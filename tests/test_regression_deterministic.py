@@ -20,16 +20,16 @@ MANIFEST = Path(__file__).resolve().parent / "regression_manifest.yaml"
 def _manifest_paths() -> list[Path]:
     data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
     cases = (data or {}).get("cases") or []
-    out: list[Path] = []
+    expected: list[Path] = []
     for c in cases:
         rel = c.get("path")
         if not rel:
             continue
-        p = FIXTURES / str(rel)
-        if p.is_dir():
-            out.append(p)
-    assert len(out) >= 8, "regression manifest should list at least 8 fixture dirs"
-    return out
+        expected.append(FIXTURES / str(rel))
+    missing = [p for p in expected if not p.is_dir()]
+    assert not missing, f"Regression manifest lists missing fixture dirs: {[str(m) for m in missing]}"
+    assert len(expected) >= 8, "regression manifest should list at least 8 cases"
+    return expected
 
 
 @pytest.mark.regression

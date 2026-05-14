@@ -1,20 +1,39 @@
-# Synthetic repos for analyze + lint + prebuild (no Gemini). Paths relative to tests/fixtures.
+# Synthetic repos: analyze + lint + prebuild (no Gemini). Paths = tests/fixtures/<path>
 cases:
+  # --- Çok popüler / standart ---
   - id: python_fastapi
     path: python_fastapi
-  - id: python_flask
-    path: python_flask
+  - id: python_django
+    path: python_django
   - id: node_nextjs
     path: node_nextjs
-  - id: go_fiber
-    path: go_fiber
   - id: java_spring
     path: java_spring
+  - id: dotnet_aspnet_core
+    path: dotnet_aspnet_core
+
+  # --- Orta ölçek / hızlı geliştirme ---
   - id: php_laravel
     path: php_laravel
   - id: ruby_rails
     path: ruby_rails
-  - id: rust_actix
-    path: rust_actix
+  - id: go_gin
+    path: go_gin
+  - id: python_flask
+    path: python_flask
+
+  # --- Modern / performans / trend ---
+  - id: rust_axum
+    path: rust_axum
+  - id: go_fiber
+    path: go_fiber
+  - id: python_streamlit
+    path: python_streamlit
+  - id: elixir_phoenix
+    path: elixir_phoenix
+
+  # --- Karmaşık yapılar ---
   - id: monorepo_fullstack
     path: monorepo_fullstack
+  - id: microservices_grpc
+    path: microservices_grpc
