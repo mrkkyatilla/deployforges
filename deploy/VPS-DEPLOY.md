@@ -105,6 +105,7 @@ Requirements:
 - `DF_GEMINI_API_KEY`  api key
 - `DF_ADMIN_API_KEY` — random strong string  
 - `DF_REQUIRE_EMAIL_VERIFICATION` — `false` for self-host (instant API key). Set `true` only after email verification is implemented.
+- `DF_AI_DEBUG_IO` / `DF_AI_PERSIST_IO_EXCERPTS` — Gemini IO logging / DB excerpts (see README env table). Admin: `GET /api/v1/admin/projects/{id}/ai-interactions` with `X-Admin-Key`.
 - `DF_GCP_PROJECT_ID` / region — Cloud Run  **deploy correction** or `DF_BUILD_BACKEND=kaniko`. 
 - `DF_BUILD_BACKEND` — `local_docker`, `kaniko` (GCP Cloud Run Job + Kaniko), `skip`   
  

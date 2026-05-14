@@ -62,7 +62,7 @@ X-API-Key: df_live_your_api_key_here
         {"name": "webhooks", "description": "Inbound and outbound webhook management"},
         {"name": "auth", "description": "User registration and API key management"},
         {"name": "health", "description": "System health and metadata"},
-        {"name": "admin", "description": "Internal administration endpoints"},
+        {"name": "admin", "description": "Internal administration (X-Admin-Key only — not X-API-Key): stats, monitoring, AI traces, reporter"},
         {"name": "traces", "description": "Pipeline trace observability"},
     ],
     responses={

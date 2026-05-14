@@ -109,7 +109,27 @@ def cleanup_cloud_run_services() -> dict:
     return {"deleted": deleted}
 
 
-celery_app.conf.beat_schedule = {
+@celery_app.task(name="deployforge.reporter_run")
+def reporter_run_task(period_days: int = 7) -> dict:
+    """Periodic admin reporter (aggregate metrics + optional LLM). Celery only — not a public API."""
+    import asyncio
+
+    from core.ai.reporter_agent import run_reporter_report
+    from db.session import engine as aio_engine
+
+    async def _run() -> dict:
+        try:
+            return await run_reporter_report(
+                period_days=period_days,
+                include_llm=settings.reporter_llm_enabled,
+            )
+        finally:
+            await aio_engine.dispose()
+
+    return asyncio.run(_run())
+
+
+_base_beat_schedule = {
     "cleanup-workspaces": {
         "task": "deployforge.cleanup_stale_resources",
         "schedule": 300.0,
@@ -119,3 +139,10 @@ celery_app.conf.beat_schedule = {
         "schedule": 300.0,
     },
 }
+if settings.reporter_beat_enabled:
+    _base_beat_schedule["reporter-daily"] = {
+        "task": "deployforge.reporter_run",
+        "schedule": 86400.0,
+    }
+
+celery_app.conf.beat_schedule = _base_beat_schedule

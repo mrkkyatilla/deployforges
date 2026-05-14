@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import shutil
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
+from uuid import UUID
 
 import redis.asyncio as redis
 from fastapi import APIRouter, Depends, HTTPException, Query, Security
@@ -13,7 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from api.config import settings
 from core.monitoring import TokenMonitor
-from db.models import Build, CreditTransaction, Project, User
+from db.models import AIInteraction, Build, CreditTransaction, Project, User
 from db.session import get_db
 
 logger = logging.getLogger(__name__)
@@ -80,6 +81,44 @@ async def system_stats(
     }
 
 
+@router.get("/projects/{project_id}/ai-interactions")
+async def list_project_ai_interactions(
+    project_id: UUID,
+    limit: int = Query(50, ge=1, le=200),
+    db: AsyncSession = Depends(get_db),
+    _: str = Depends(require_admin_key),
+) -> dict:
+    """Return recent Gemini interaction rows (tokens + optional ``extra`` excerpts)."""
+    proj = await db.get(Project, project_id)
+    if not proj:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    result = await db.execute(
+        select(AIInteraction)
+        .where(AIInteraction.project_id == project_id)
+        .order_by(AIInteraction.created_at.desc())
+        .limit(limit)
+    )
+    rows = result.scalars().all()
+    return {
+        "project_id": str(project_id),
+        "count": len(rows),
+        "interactions": [
+            {
+                "id": str(r.id),
+                "interaction_type": r.interaction_type,
+                "prompt_tokens": r.prompt_tokens,
+                "completion_tokens": r.completion_tokens,
+                "model_used": r.model_used,
+                "latency_ms": r.latency_ms,
+                "created_at": r.created_at.isoformat() if r.created_at else None,
+                "extra": r.extra,
+            }
+            for r in rows
+        ],
+    }
+
+
 @router.get("/health/detailed")
 async def detailed_health(
     db: AsyncSession = Depends(get_db),
@@ -132,12 +171,28 @@ async def detailed_health(
     }
 
 
+@router.post("/reporter/run")
+async def run_admin_reporter(
+    period_days: int = Query(7, ge=1, le=90),
+    include_llm: bool = Query(False),
+    _: str = Depends(require_admin_key),
+) -> dict:
+    """Deterministic token/usage report plus optional LLM summary. Admin API key only — not callable with X-API-Key."""
+    from core.ai.reporter_agent import run_reporter_report
+
+    try:
+        return await run_reporter_report(period_days=period_days, include_llm=include_llm)
+    except Exception:
+        logger.exception("Admin reporter run failed")
+        raise HTTPException(status_code=500, detail="Reporter run failed")
+
+
 @router.get("/monitoring/report")
 async def get_monitoring_report(
     period_days: int = Query(30, ge=1, le=90),
     _: str = Depends(require_admin_key),
 ) -> dict:
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     period_start = now - timedelta(days=period_days)
 
     monitor = TokenMonitor()

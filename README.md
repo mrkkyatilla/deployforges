@@ -122,6 +122,26 @@ curl http://localhost:8000/api/v1/projects/{id}/result \
 | `DF_ADMIN_API_KEY` | No | For admin endpoints |
 | `DF_REQUIRE_EMAIL_VERIFICATION` | No | `false` (default): instant sign-up + API key. `true`: register returns 501 until verify-by-email is implemented — use before going production. |
 | `DF_DEBUG` | No | Debug mode (default: false) |
+| `DF_AI_DEBUG_IO` | No | When true, logs truncated Gemini prompts/responses (masked). |
+| `DF_AI_DEBUG_MAX_CHARS` | No | Max chars per prompt/response excerpt for logs and DB (default: 8000). |
+| `DF_AI_PERSIST_IO_EXCERPTS` | No | When true, stores excerpts + parse metadata on ``ai_interactions.extra``. |
+| `DF_AI_DOCKERFILE_PLAN_ENABLED` | No | When true (default), runs a Flash JSON **plan** step before Dockerfile generation. |
+| `DF_AI_DOCKERFILE_CRITIC_REFINE_ENABLED` | No | When true, runs critic + optional one-shot **refine** after generation (extra tokens). |
+| `DF_REPORTER_LLM_ENABLED` | No | When true, ``POST /api/v1/admin/reporter/run`` may call Gemini on **aggregate** metrics only. |
+| `DF_REPORTER_BEAT_ENABLED` | No | When true, Celery Beat schedules daily ``deployforge.reporter_run`` (no customer HTTP). |
+
+---
+
+## Admin API (``X-Admin-Key`` only)
+
+Customer API keys (``X-API-Key``) cannot call these routes.
+
+| Method | Path | Description |
+| --- | --- | --- |
+| GET | `/api/v1/admin/monitoring/report` | Token/cost report + rule-based suggestions |
+| POST | `/api/v1/admin/reporter/run` | Same metrics plus optional LLM summary (`include_llm=true` and ``DF_REPORTER_LLM_ENABLED``) |
+
+Query params for reporter: ``period_days`` (1–90), ``include_llm`` (default false).
 
 ---
 
@@ -164,6 +184,7 @@ make prod-down    # Stop production
 | GET | `/api/v1/billing/credits` | Key | Credit balance |
 | GET | `/api/v1/billing/usage` | Key | Usage report |
 | GET | `/api/v1/health` | — | Health check |
+| POST | `/api/v1/admin/reporter/run` | Admin key | Usage report + optional LLM narrative (aggregate data only) |
 
 Full API documentation: `http://localhost:8000/docs` (Swagger) or `/redoc`
 

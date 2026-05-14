@@ -1,5 +1,4 @@
 import uuid
-from datetime import datetime
 
 from sqlalchemy import (
     Column,
@@ -196,3 +195,4 @@ class AIInteraction(Base):
     model_used = Column(String(100))
     latency_ms = Column(Integer)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    extra = Column(JSONB, nullable=True)

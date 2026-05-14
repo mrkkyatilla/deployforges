@@ -14,7 +14,10 @@ MODEL_COST_PER_MILLION = {
 
 STEP_ALLOCATIONS = {
     "analysis": 0.10,
-    "generation": 0.30,
+    "dockerfile_plan": 0.05,
+    "generation": 0.22,
+    "dockerfile_critic": 0.04,
+    "dockerfile_refine": 0.08,
     "fix_attempt": 0.15,
     "compose": 0.10,
     "dockerignore": 0.05,
@@ -24,6 +27,9 @@ COMPLEXITY_THRESHOLDS = {
     "simple_fix": "gemini-2.5-flash",
     "dockerignore": "gemini-2.5-flash",
     "analysis_fallback": "gemini-2.5-flash",
+    "dockerfile_plan": "gemini-2.5-flash",
+    "dockerfile_critic": "gemini-2.5-flash",
+    "dockerfile_refine": "gemini-2.5-pro",
     "generation": "gemini-2.5-pro",
     "complex_fix": "gemini-2.5-pro",
     "compose": "gemini-2.5-pro",

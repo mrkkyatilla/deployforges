@@ -14,12 +14,15 @@ from langgraph.graph import END, StateGraph
 from langgraph.graph.state import CompiledStateGraph
 
 from api.config import settings
+from core.ai.ai_interaction_extras import build_ai_interaction_extra
 from core.ai.context_builder import ContextBuilder
 from core.ai.dockerfile_generator import DockerfileGenerator, DockerfileResult, FixResult
 from core.ai.dockerfile_linter import DockerfileLinter
 from core.ai.gemini_client import GeminiClient
+from core.ai.gemini_json_repair import repair_model_json
+from core.ai.gemini_schemas import schema_ai_analysis
+from core.ai.json_response import parse_model_json
 from core.ai.prompts.analysis import AI_ANALYSIS_SYSTEM_PROMPT, build_ai_analysis_prompt
-from core.ai.templates import select_template
 from core.ai.token_manager import TokenBudget
 from core.analysis.engine import AnalysisEngine
 from core.analysis.fingerprint import ProjectFingerprint
@@ -64,6 +67,7 @@ class DeployForgeState(TypedDict):
     current_dockerignore: str
     ai_warnings: Annotated[list[str], operator.add]
     lint_passed: bool
+    dockerfile_critic: dict[str, Any]
 
     # Build
     build_attempts: Annotated[list[dict], operator.add]
@@ -224,7 +228,10 @@ async def ai_analyze_node(state: DeployForgeState) -> dict[str, Any]:
 
     ctx = ContextBuilder()
     file_tree = ctx.build_file_tree_list(state["project_path"])
-    critical_files = ctx.build_critical_files(state["project_path"], max_tokens=min(8000, allowed // 2))
+    critical_files = ctx.build_critical_files(
+        state["project_path"],
+        max_tokens=min(8000, allowed // 2),
+    )
 
     prompt = build_ai_analysis_prompt(file_tree, critical_files)
     client = GeminiClient()
@@ -234,9 +241,43 @@ async def ai_analyze_node(state: DeployForgeState) -> dict[str, Any]:
         system_instruction=AI_ANALYSIS_SYSTEM_PROMPT,
         model=settings.gemini_flash_model,
         max_output_tokens=min(2048, allowed),
+        response_schema=schema_ai_analysis(),
+        io_log_label="ai_analysis",
     )
 
     token_budget.record("analysis", response.total_tokens)
+
+    pr = parse_model_json(response.text)
+    ai_result = pr.data
+    repair_resp = None
+    pr2 = None
+    if ai_result is None:
+        hint = (
+            "language (string), optional language_version, framework, framework_version, "
+            "entrypoint_file, start_command, port (integer), "
+            "additional_system_deps (array of strings), "
+            "warnings (array of strings), confidence (number)"
+        )
+        repaired, repair_resp = await repair_model_json(
+            client,
+            broken_text=response.text,
+            key_hint=hint,
+            token_budget=token_budget,
+            spend_step="analysis",
+            response_schema=schema_ai_analysis(),
+            io_log_label="ai_analysis",
+        )
+        if repaired is not None and repair_resp.text:
+            token_budget.record("analysis", repair_resp.total_tokens)
+            pr2 = parse_model_json(repair_resp.text)
+            ai_result = repaired
+
+    extra = build_ai_interaction_extra(
+        response=response,
+        parse_first=pr,
+        parse_second=pr2,
+        repair_response=repair_resp,
+    )
 
     # Persist the AI interaction
     try:
@@ -248,24 +289,32 @@ async def ai_analyze_node(state: DeployForgeState) -> dict[str, Any]:
                 completion_tokens=response.completion_tokens,
                 model_used=response.model,
                 latency_ms=response.latency_ms,
+                extra=extra,
             ))
             await db.commit()
     except Exception:
         logger.warning("Failed to persist AI interaction record", exc_info=True)
 
     merged_fp = dict(state.get("fingerprint", {}))
-    try:
-        ai_result = json.loads(response.text)
-        for key in ("language_version", "framework", "framework_version",
-                     "entrypoint_file", "start_command", "port",
-                     "additional_system_deps"):
+    new_confidence = float(state.get("analysis_confidence", 0.5))
+    ai_warnings: list[str] = []
+    if isinstance(ai_result, dict):
+        for key in (
+            "language_version",
+            "framework",
+            "framework_version",
+            "entrypoint_file",
+            "start_command",
+            "port",
+            "additional_system_deps",
+        ):
             if ai_result.get(key) is not None:
                 merged_fp[key] = ai_result[key]
-        new_confidence = float(ai_result.get("confidence", state.get("analysis_confidence", 0.5)))
-        ai_warnings = ai_result.get("warnings", [])
-    except (json.JSONDecodeError, ValueError):
-        logger.error("Failed to parse AI analysis response")
-        new_confidence = state.get("analysis_confidence", 0.5)
+        new_confidence = float(ai_result.get("confidence", new_confidence))
+        raw_warnings = ai_result.get("warnings", [])
+        ai_warnings = raw_warnings if isinstance(raw_warnings, list) else []
+    else:
+        logger.error("Failed to parse AI analysis response after repair")
         ai_warnings = ["AI analysis response was not valid JSON"]
 
     await _emit(pid, "step_complete", {"step": "ai_analyze", "new_confidence": new_confidence})
@@ -294,6 +343,12 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
         token_budget=token_budget,
     )
 
+    gen_extra = (
+        build_ai_interaction_extra(io_meta=gen_result.io_meta)
+        if gen_result.io_meta
+        else None
+    )
+
     try:
         async with async_session_factory() as db:
             db.add(AIInteraction(
@@ -303,20 +358,148 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
                 completion_tokens=0,
                 model_used=settings.gemini_pro_model,
                 latency_ms=0,
+                extra=gen_extra,
             ))
             await db.commit()
     except Exception:
         logger.warning("Failed to persist AI interaction record", exc_info=True)
 
-    await _emit(pid, "step_complete", {"step": "generate_dockerfile", "warnings": gen_result.warnings})
+    await _emit(
+        pid,
+        "step_complete",
+        {"step": "generate_dockerfile", "warnings": gen_result.warnings},
+    )
 
     return {
         "current_dockerfile": gen_result.dockerfile,
         "current_dockerignore": gen_result.dockerignore,
         "ai_warnings": gen_result.warnings,
+        "dockerfile_critic": {},
         "total_tokens_used": token_budget.spent,
         "token_breakdown": token_budget.breakdown,
     }
+
+
+async def dockerfile_critic_node(state: DeployForgeState) -> dict[str, Any]:
+    """Optional static review of the generated Dockerfile (JSON issues only)."""
+    pid = state["project_id"]
+    await _emit(pid, "step_start", {"step": "dockerfile_critic"})
+    token_budget = _tb_from_state(state)
+    client = GeminiClient()
+    generator = DockerfileGenerator(client)
+    spent_before = token_budget.breakdown.get("dockerfile_critic", 0)
+    critic = await generator.run_critic(
+        state["current_dockerfile"],
+        state["fingerprint"],
+        token_budget,
+    )
+    critic_tokens = max(0, token_budget.breakdown.get("dockerfile_critic", 0) - spent_before)
+    critic_extra = None
+    if settings.ai_persist_io_excerpts and critic_tokens > 0:
+        critic_extra = {"interaction": "dockerfile_critic", "issue_count": len(critic.get("issues", []))}
+
+    try:
+        async with async_session_factory() as db:
+            if critic_tokens > 0:
+                db.add(AIInteraction(
+                    project_id=UUID(pid),
+                    interaction_type="dockerfile_critic",
+                    prompt_tokens=critic_tokens,
+                    completion_tokens=0,
+                    model_used=settings.gemini_flash_model,
+                    latency_ms=0,
+                    extra=critic_extra,
+                ))
+                await db.commit()
+    except Exception:
+        logger.warning("Failed to persist dockerfile_critic interaction", exc_info=True)
+
+    await _emit(
+        pid,
+        "step_complete",
+        {
+            "step": "dockerfile_critic",
+            "issue_count": len(critic.get("issues", [])),
+        },
+    )
+    return {
+        "dockerfile_critic": critic,
+        "total_tokens_used": token_budget.spent,
+        "token_breakdown": token_budget.breakdown,
+    }
+
+
+async def dockerfile_refine_node(state: DeployForgeState) -> dict[str, Any]:
+    """One full Dockerfile rewrite guided by critic issues (optional)."""
+    pid = state["project_id"]
+    critic = state.get("dockerfile_critic") or {}
+    issues = critic.get("issues") or []
+    if not settings.ai_dockerfile_critic_refine_enabled or not issues:
+        await _emit(pid, "step_complete", {"step": "dockerfile_refine", "skipped": True})
+        return {}
+
+    await _emit(pid, "step_start", {"step": "dockerfile_refine"})
+    token_budget = _tb_from_state(state)
+    client = GeminiClient()
+    generator = DockerfileGenerator(client)
+    try:
+        refine_result = await generator.refine_from_critic(
+            dockerfile=state["current_dockerfile"],
+            dockerignore=state["current_dockerignore"],
+            critic=critic,
+            fingerprint=state["fingerprint"],
+            project_path=state["project_path"],
+            token_budget=token_budget,
+        )
+    except Exception as exc:
+        logger.exception("dockerfile_refine failed for project %s", pid)
+        await _emit(pid, "step_complete", {
+            "step": "dockerfile_refine",
+            "error": str(exc),
+        })
+        return {
+            "total_tokens_used": token_budget.spent,
+            "token_breakdown": token_budget.breakdown,
+            "ai_warnings": [f"Refine step failed (keeping previous Dockerfile): {exc!s}"],
+        }
+
+    refine_extra = (
+        build_ai_interaction_extra(io_meta=refine_result.io_meta)
+        if refine_result.io_meta
+        else None
+    )
+    try:
+        async with async_session_factory() as db:
+            db.add(AIInteraction(
+                project_id=UUID(pid),
+                interaction_type="dockerfile_refine",
+                prompt_tokens=refine_result.tokens_used,
+                completion_tokens=0,
+                model_used=settings.gemini_pro_model,
+                latency_ms=0,
+                extra=refine_extra,
+            ))
+            await db.commit()
+    except Exception:
+        logger.warning("Failed to persist dockerfile_refine interaction", exc_info=True)
+
+    await _emit(pid, "step_complete", {"step": "dockerfile_refine"})
+    return {
+        "current_dockerfile": refine_result.dockerfile,
+        "current_dockerignore": refine_result.dockerignore,
+        "ai_warnings": refine_result.warnings,
+        "total_tokens_used": token_budget.spent,
+        "token_breakdown": token_budget.breakdown,
+    }
+
+
+def route_after_dockerfile_critic(state: DeployForgeState) -> str:
+    if not settings.ai_dockerfile_critic_refine_enabled:
+        return "to_lint"
+    issues = (state.get("dockerfile_critic") or {}).get("issues") or []
+    if not issues:
+        return "to_lint"
+    return "refine"
 
 
 async def lint_check_node(state: DeployForgeState) -> dict[str, Any]:
@@ -583,7 +766,11 @@ async def classify_error_node(state: DeployForgeState) -> dict[str, Any]:
     build_log = latest_attempt.get("log_tail", "")
 
     fp = state.get("fingerprint", {})
-    language = fp.get("language", {}).get("primary") if isinstance(fp.get("language"), dict) else None
+    language = (
+        fp.get("language", {}).get("primary")
+        if isinstance(fp.get("language"), dict)
+        else None
+    )
 
     classifier = BuildErrorClassifier()
     classified = classifier.classify(build_log, language=language)
@@ -676,16 +863,29 @@ async def ai_fix_build_node(state: DeployForgeState) -> dict[str, Any]:
         token_budget=token_budget,
     )
 
+    fix_extra = (
+        build_ai_interaction_extra(io_meta=fix_result.io_meta)
+        if fix_result.io_meta
+        else None
+    )
+
     try:
         async with async_session_factory() as db:
-            db.add(AIInteraction(
-                project_id=UUID(pid),
-                interaction_type=f"fix_attempt_{attempt}",
-                prompt_tokens=fix_result.tokens_used,
-                completion_tokens=0,
-                model_used=settings.gemini_flash_model if attempt <= 2 else settings.gemini_pro_model,
-                latency_ms=0,
-            ))
+            db.add(
+                AIInteraction(
+                    project_id=UUID(pid),
+                    interaction_type=f"fix_attempt_{attempt}",
+                    prompt_tokens=fix_result.tokens_used,
+                    completion_tokens=0,
+                    model_used=(
+                        settings.gemini_flash_model
+                        if attempt <= 2
+                        else settings.gemini_pro_model
+                    ),
+                    latency_ms=0,
+                    extra=fix_extra,
+                )
+            )
             await db.commit()
     except Exception:
         logger.warning("Failed to persist AI fix interaction record", exc_info=True)
@@ -832,7 +1032,10 @@ def route_after_deploy(state: DeployForgeState) -> str:
 
 
 def route_after_error_classification(state: DeployForgeState) -> str:
-    if state.get("total_tokens_used", 0) >= state.get("token_budget", settings.default_token_budget):
+    if state.get("total_tokens_used", 0) >= state.get(
+        "token_budget",
+        settings.default_token_budget,
+    ):
         return "token_budget_exceeded"
 
     if state.get("current_attempt", 0) >= state.get("max_attempts", settings.max_build_attempts):
@@ -858,6 +1061,8 @@ def build_deploy_graph() -> CompiledStateGraph:
     graph.add_node("analyze", analyze_node)
     graph.add_node("ai_analyze", ai_analyze_node)
     graph.add_node("generate_dockerfile", generate_dockerfile_node)
+    graph.add_node("dockerfile_critic", dockerfile_critic_node)
+    graph.add_node("dockerfile_refine", dockerfile_refine_node)
     graph.add_node("lint_check", lint_check_node)
     graph.add_node("auto_fix_lint", auto_fix_lint_node)
     graph.add_node("pre_build_validate", pre_build_validate_node)
@@ -893,8 +1098,16 @@ def build_deploy_graph() -> CompiledStateGraph:
     )
     graph.add_edge("ai_analyze", "generate_dockerfile")
 
-    # Generate → lint
-    graph.add_edge("generate_dockerfile", "lint_check")
+    graph.add_edge("generate_dockerfile", "dockerfile_critic")
+    graph.add_conditional_edges(
+        "dockerfile_critic",
+        route_after_dockerfile_critic,
+        {
+            "refine": "dockerfile_refine",
+            "to_lint": "lint_check",
+        },
+    )
+    graph.add_edge("dockerfile_refine", "lint_check")
 
     # Lint → pre-build or auto-fix
     graph.add_conditional_edges(
@@ -993,6 +1206,7 @@ async def run_pipeline(project_id: UUID) -> None:
         "current_dockerignore": "",
         "ai_warnings": [],
         "lint_passed": False,
+        "dockerfile_critic": {},
 
         "build_attempts": [],
         "current_attempt": 0,

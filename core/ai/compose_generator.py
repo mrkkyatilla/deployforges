@@ -1,12 +1,14 @@
 from __future__ import annotations
 
-import json
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import yaml
 
 from core.ai.gemini_client import GeminiClient
+from core.ai.gemini_json_repair import repair_model_json
+from core.ai.gemini_schemas import schema_compose_generation
+from core.ai.json_response import parse_model_json
 from core.ai.token_manager import TokenBudget, estimate_tokens, select_model_for_step
 
 logger = logging.getLogger(__name__)
@@ -150,7 +152,7 @@ class ComposeGenerator:
             )
 
         compose_yml, tokens_used = await self._generate_with_ai(
-            services, fingerprints, allowed, warnings,
+            services, fingerprints, allowed, warnings, token_budget,
         )
         token_budget.record("compose", tokens_used)
 
@@ -329,6 +331,7 @@ class ComposeGenerator:
         fingerprints: dict[str, dict],
         max_tokens: int,
         warnings: list[str],
+        token_budget: TokenBudget,
     ) -> tuple[str, int]:
         prompt = self._build_ai_prompt(services, fingerprints)
         prompt_tokens = estimate_tokens(prompt)
@@ -344,6 +347,7 @@ class ComposeGenerator:
             'docker-compose) and "warnings" (a list of strings with any '
             "caveats or recommendations)."
         )
+        schema = schema_compose_generation()
 
         try:
             response = await self._gemini.generate_json(
@@ -352,6 +356,8 @@ class ComposeGenerator:
                 model=model,
                 temperature=0.1,
                 max_output_tokens=output_limit,
+                response_schema=schema,
+                io_log_label="compose_generation",
             )
         except Exception:
             logger.error("AI compose generation failed", exc_info=True)
@@ -363,23 +369,53 @@ class ComposeGenerator:
             )
             return yml, 0
 
-        try:
-            parsed = json.loads(response.text)
-            compose_yml = parsed.get("compose_yml", "")
-            ai_warnings = parsed.get("warnings", [])
-            if isinstance(ai_warnings, list):
-                warnings.extend(ai_warnings)
-        except (json.JSONDecodeError, KeyError):
+        pr = parse_model_json(response.text)
+        data = pr.data
+        total_tok = response.total_tokens
+        repair_resp = None
+
+        if data is None:
+            hint = 'compose_yml (string, YAML body), warnings (array of strings)'
+            repaired, repair_resp = await repair_model_json(
+                self._gemini,
+                broken_text=response.text,
+                key_hint=hint,
+                token_budget=token_budget,
+                spend_step="compose",
+                response_schema=schema,
+                io_log_label="compose_generation",
+            )
+            if repaired is not None:
+                data = repaired
+                if repair_resp.text:
+                    total_tok += repair_resp.total_tokens
+
+        if not isinstance(data, dict):
             logger.warning("Failed to parse AI compose response as JSON")
-            compose_yml = response.text
-            warnings.append("AI response was not structured JSON; using raw output")
+            warnings.append("AI compose JSON parse failed; using template fallback")
+            yml = self._generate_template(
+                services, fingerprints, "generic", warnings,
+            )
+            return yml, total_tok
+
+        compose_yml = str(data.get("compose_yml", "") or "")
+        ai_warnings = data.get("warnings", [])
+        if isinstance(ai_warnings, list):
+            warnings.extend(str(w) for w in ai_warnings)
+
+        if not compose_yml.strip():
+            warnings.append("Empty compose_yml from AI; using template fallback")
+            compose_yml = self._generate_template(
+                services, fingerprints, "generic", warnings,
+            )
+            return compose_yml, total_tok
 
         try:
             yaml.safe_load(compose_yml)
         except yaml.YAMLError:
             warnings.append("Generated compose YAML may have syntax issues")
 
-        return compose_yml, response.total_tokens
+        return compose_yml, total_tok
 
     @staticmethod
     def _build_ai_prompt(
@@ -395,14 +431,29 @@ class ComposeGenerator:
             port_info = fp.get("port", {})
             env_info = fp.get("environment", {})
 
+            lang_primary = (
+                lang.get("primary", "unknown") if isinstance(lang, dict) else lang
+            )
+            fw_name = fw.get("name", "none") if isinstance(fw, dict) else fw
+            port_val = (
+                port_info.get("value", "unknown")
+                if isinstance(port_info, dict)
+                else port_info
+            )
+            has_env = (
+                env_info.get("requires_env_vars", False)
+                if isinstance(env_info, dict)
+                else False
+            )
+
             desc = (
                 f"- {name}:\n"
                 f"    type: {svc.get('type', 'unknown')}\n"
                 f"    root_path: {svc.get('root_path', '.')}\n"
-                f"    language: {lang.get('primary', 'unknown') if isinstance(lang, dict) else lang}\n"
-                f"    framework: {fw.get('name', 'none') if isinstance(fw, dict) else fw}\n"
-                f"    port: {port_info.get('value', 'unknown') if isinstance(port_info, dict) else port_info}\n"
-                f"    has_env_vars: {env_info.get('requires_env_vars', False) if isinstance(env_info, dict) else False}\n"
+                f"    language: {lang_primary}\n"
+                f"    framework: {fw_name}\n"
+                f"    port: {port_val}\n"
+                f"    has_env_vars: {has_env}\n"
                 f"    depends_on: {svc.get('depends_on', [])}"
             )
             svc_descriptions.append(desc)
@@ -413,7 +464,8 @@ class ComposeGenerator:
             + "\n".join(svc_descriptions)
             + "\n\n"
             "Requirements:\n"
-            "- Each service with a root_path should have a build context pointing to that directory\n"
+            "- Each service with a root_path should have a build context "
+            "pointing to that directory\n"
             "- Include appropriate port mappings\n"
             "- Include depends_on with health checks where applicable\n"
             "- Add environment variables with sensible defaults using ${VAR:-default} syntax\n"

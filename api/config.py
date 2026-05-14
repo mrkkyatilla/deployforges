@@ -13,6 +13,7 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         env_prefix="DF_",
         case_sensitive=False,
+        extra="ignore",
     )
 
     # --- Application ---
@@ -39,6 +40,23 @@ class Settings(BaseSettings):
     gemini_flash_model: str = "gemini-2.5-flash"
     gemini_max_retries: int = 3
     gemini_timeout: int = 60
+
+    # When True: log truncated Gemini prompt/response (masked). Do not enable in untrusted log sinks.
+    ai_debug_io: bool = False
+    # Max characters per prompt/response excerpt for logs and optional DB persistence.
+    ai_debug_max_chars: int = 8000
+    # When True: store prompt/response excerpts on ai_interactions.extra (still truncated).
+    ai_persist_io_excerpts: bool = False
+
+    # Dockerfile generation: optional plan JSON step before full generation (Flash).
+    ai_dockerfile_plan_enabled: bool = True
+    # Optional critic + one full refine pass after generation (Pro refine); higher cost.
+    ai_dockerfile_critic_refine_enabled: bool = False
+
+    # Admin reporter: LLM narrative over aggregate metrics only (never customer-triggered).
+    reporter_llm_enabled: bool = False
+    # When True: Celery Beat schedules periodic reporter runs (still no public API).
+    reporter_beat_enabled: bool = False
 
     # --- Token Budget ---
     default_token_budget: int = 50_000
