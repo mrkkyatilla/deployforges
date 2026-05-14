@@ -40,6 +40,17 @@ class Settings(BaseSettings):
     gemini_flash_model: str = "gemini-2.5-flash"
     gemini_max_retries: int = 3
     gemini_timeout: int = 60
+    # Per-request backoff between Gemini retries (exponential cap). Jitter reduces herd effects.
+    gemini_retry_backoff_base_seconds: float = 5.0
+    gemini_retry_backoff_max_seconds: float = 120.0
+    gemini_retry_backoff_jitter_ratio: float = 0.25
+    # After primary model exhausts retries on transient errors, try this model once (same retry loop).
+    gemini_fallback_model: str = ""
+
+    # Celery: only ``TransientGeminiError`` triggers full-pipeline retries (503/429 overload).
+    celery_transient_max_retries: int = 3
+    celery_transient_retry_countdown_base: int = 90
+    celery_transient_retry_countdown_max: int = 600
 
     # When True: log truncated Gemini prompt/response (masked). Do not enable in untrusted log sinks.
     ai_debug_io: bool = False

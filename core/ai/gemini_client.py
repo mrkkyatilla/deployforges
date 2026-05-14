@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass
 from typing import Any
@@ -24,6 +26,36 @@ class AIResponse:
     latency_ms: int
     excerpt_prompt: str | None = None
     excerpt_response: str | None = None
+
+
+def is_transient_gemini_http_error(exc: BaseException | None) -> bool:
+    """503 overload, 429 quota, common deadline signals — worth backing off or switching model."""
+    if exc is None:
+        return False
+    s = str(exc)
+    low = s.lower()
+    if "503" in s and ("unavailable" in low or "high demand" in low):
+        return True
+    if "429" in s or "resource_exhausted" in low:
+        return True
+    if "504" in s and "unavailable" in low:
+        return True
+    if "deadline exceeded" in low:
+        return True
+    return False
+
+
+def _retry_delay_seconds(attempt: int, exc: Exception | None) -> float:
+    """Sleep before the next HTTP attempt (``attempt`` is 1-based index of the failed try)."""
+    base = float(settings.gemini_retry_backoff_base_seconds)
+    cap = float(settings.gemini_retry_backoff_max_seconds)
+    raw = min(cap, base * (2 ** (attempt - 1)))
+    if is_transient_gemini_http_error(exc):
+        raw = min(cap, raw * 1.5)
+    jitter = float(settings.gemini_retry_backoff_jitter_ratio)
+    if jitter > 0:
+        raw *= max(0.1, 1.0 - jitter + (2 * jitter * random.random()))
+    return max(1.0, raw)
 
 
 class GeminiClient:
@@ -68,21 +100,19 @@ class GeminiClient:
             re or "",
         )
 
-    async def generate(
+    async def _generate_one_model(
         self,
         *,
+        model_name: str,
         prompt: str,
-        system_instruction: str | None = None,
-        model: str | None = None,
-        temperature: float = 0.1,
-        max_output_tokens: int = 4096,
-        response_mime_type: str | None = None,
-        response_schema: dict[str, Any] | types.Schema | None = None,
-        io_log_label: str = "",
+        system_instruction: str | None,
+        temperature: float,
+        max_output_tokens: int,
+        response_mime_type: str | None,
+        response_schema: dict[str, Any] | types.Schema | None,
+        io_log_label: str,
     ) -> AIResponse:
-        model = model or settings.gemini_pro_model
         start = time.perf_counter_ns()
-
         config = types.GenerateContentConfig(
             temperature=temperature,
             max_output_tokens=max_output_tokens,
@@ -97,7 +127,7 @@ class GeminiClient:
         for attempt in range(1, settings.gemini_max_retries + 1):
             try:
                 response = await self._client.aio.models.generate_content(
-                    model=model,
+                    model=model_name,
                     contents=prompt,
                     config=config,
                 )
@@ -106,9 +136,9 @@ class GeminiClient:
                 last_error = exc
                 logger.warning("Gemini API attempt %d failed: %s", attempt, exc)
                 if attempt < settings.gemini_max_retries:
-                    import asyncio
-
-                    await asyncio.sleep(2**attempt)
+                    delay = _retry_delay_seconds(attempt, exc)
+                    logger.info("Gemini retry sleep %.1fs before attempt %d", delay, attempt + 1)
+                    await asyncio.sleep(delay)
         else:
             msg = f"Gemini API failed after {settings.gemini_max_retries} retries"
             raise RuntimeError(msg) from last_error
@@ -120,7 +150,7 @@ class GeminiClient:
         ep, er = self._maybe_excerpts(prompt, text)
         self._maybe_log_io(
             label=io_log_label or "gemini",
-            model=model,
+            model=model_name,
             prompt=prompt,
             response_text=text,
         )
@@ -130,11 +160,60 @@ class GeminiClient:
             prompt_tokens=usage.prompt_token_count if usage else 0,
             completion_tokens=usage.candidates_token_count if usage else 0,
             total_tokens=usage.total_token_count if usage else 0,
-            model=model,
+            model=model_name,
             latency_ms=elapsed_ms,
             excerpt_prompt=ep,
             excerpt_response=er,
         )
+
+    async def generate(
+        self,
+        *,
+        prompt: str,
+        system_instruction: str | None = None,
+        model: str | None = None,
+        temperature: float = 0.1,
+        max_output_tokens: int = 4096,
+        response_mime_type: str | None = None,
+        response_schema: dict[str, Any] | types.Schema | None = None,
+        io_log_label: str = "",
+    ) -> AIResponse:
+        explicit_model = model is not None
+        primary = model if explicit_model else settings.gemini_pro_model
+        chain: list[str] = [primary]
+        if not explicit_model:
+            fb = (settings.gemini_fallback_model or "").strip()
+            if fb and fb != primary:
+                chain.append(fb)
+
+        last_runtime: RuntimeError | None = None
+        for idx, model_name in enumerate(chain):
+            try:
+                return await self._generate_one_model(
+                    model_name=model_name,
+                    prompt=prompt,
+                    system_instruction=system_instruction,
+                    temperature=temperature,
+                    max_output_tokens=max_output_tokens,
+                    response_mime_type=response_mime_type,
+                    response_schema=response_schema,
+                    io_log_label=io_log_label,
+                )
+            except RuntimeError as err:
+                last_runtime = err
+                inner = err.__cause__
+                inner_exc = inner if isinstance(inner, BaseException) else None
+                has_fallback = idx + 1 < len(chain)
+                if has_fallback and is_transient_gemini_http_error(inner_exc):
+                    logger.warning(
+                        "Gemini model %s failed after retries; trying fallback %s",
+                        model_name,
+                        chain[idx + 1],
+                    )
+                    continue
+                raise
+        assert last_runtime is not None
+        raise last_runtime
 
     async def generate_json(
         self,

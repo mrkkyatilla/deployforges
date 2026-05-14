@@ -7,6 +7,7 @@ from uuid import UUID
 from celery import Celery
 
 from api.config import settings
+from core.ai.pipeline_errors import TransientGeminiError
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +47,15 @@ celery_app.conf.update(
     worker_max_tasks_per_child=50,
 )
 
+# Only ``TransientGeminiError`` uses Celery retries (503/429 overload). Other failures fail fast.
+_CELERY_TRANSIENT_MAX = max(0, settings.celery_transient_max_retries)
 
-@celery_app.task(bind=True, name="deployforge.run_pipeline", max_retries=2)
+
+@celery_app.task(
+    bind=True,
+    name="deployforge.run_pipeline",
+    max_retries=_CELERY_TRANSIENT_MAX,
+)
 def run_pipeline_task(self, project_id: str) -> dict:
     """Execute the full LangGraph pipeline for a project."""
     from sqlalchemy import create_engine
@@ -55,17 +63,35 @@ def run_pipeline_task(self, project_id: str) -> dict:
 
     from db.models import Project
 
-    logger.info("Starting pipeline for project %s (attempt %d)", project_id, self.request.retries + 1)
+    logger.info(
+        "Starting pipeline for project %s (celery try %d)",
+        project_id,
+        self.request.retries + 1,
+    )
 
     try:
         asyncio.run(_run_pipeline_in_loop(UUID(project_id)))
+    except TransientGeminiError as exc:
+        if _CELERY_TRANSIENT_MAX > 0 and self.request.retries < self.max_retries:
+            base = settings.celery_transient_retry_countdown_base
+            cap = settings.celery_transient_retry_countdown_max
+            countdown = min(cap, int(base * (2 ** self.request.retries)))
+            logger.warning(
+                "Transient Gemini for project %s — Celery retry %d/%d in %ds: %s",
+                project_id,
+                self.request.retries + 1,
+                self.max_retries,
+                countdown,
+                exc,
+            )
+            raise self.retry(exc=exc, countdown=countdown) from exc
+
+        logger.error("Transient Gemini retries exhausted for project %s", project_id)
+        _mark_project_failed(project_id, str(exc))
+        return {"project_id": project_id, "status": "failed", "error": str(exc)}
     except Exception as exc:
         logger.exception("Pipeline failed for project %s", project_id)
-
-        if self.request.retries < self.max_retries:
-            raise self.retry(exc=exc, countdown=2 ** self.request.retries * 30)
-
-        _mark_project_failed(project_id, str(exc))
+        _mark_project_failed(project_id, str(exc)[:2000])
         return {"project_id": project_id, "status": "failed", "error": str(exc)}
 
     engine = create_engine(settings.sync_database_url)
@@ -82,9 +108,8 @@ def run_pipeline_task(self, project_id: str) -> dict:
 
 def _mark_project_failed(project_id: str, error_message: str) -> None:
     """Update project status to 'failed' after all retries are exhausted."""
-    from sqlalchemy import update
+    from sqlalchemy import create_engine, update
     from sqlalchemy.orm import Session
-    from sqlalchemy import create_engine
 
     from db.models import Project
 

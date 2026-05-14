@@ -18,7 +18,8 @@ from core.ai.ai_interaction_extras import build_ai_interaction_extra
 from core.ai.context_builder import ContextBuilder
 from core.ai.dockerfile_generator import DockerfileGenerator, DockerfileResult, FixResult
 from core.ai.dockerfile_linter import DockerfileLinter
-from core.ai.gemini_client import GeminiClient
+from core.ai.gemini_client import GeminiClient, is_transient_gemini_http_error
+from core.ai.pipeline_errors import TransientGeminiError
 from core.ai.gemini_json_repair import repair_model_json
 from core.ai.gemini_schemas import schema_ai_analysis
 from core.ai.json_response import parse_model_json
@@ -144,6 +145,55 @@ def _failure_summary_from_final_report(final_report: Any) -> str | None:
     if err:
         return str(err)
     return None
+
+
+def _pipeline_crash_error_summary(exc: BaseException, *, max_len: int = 1800) -> str:
+    """User-facing line when ``ainvoke`` raises (outside normal graph failure paths)."""
+    parts: list[str] = []
+    seen_ids: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and len(seen_ids) < 12:
+        oid = id(cur)
+        if oid in seen_ids:
+            break
+        seen_ids.add(oid)
+        parts.append(str(cur))
+        cur = cur.__cause__
+
+    blob = " ".join(parts)
+    low = blob.lower()
+    if "503" in blob and ("unavailable" in low or "high demand" in low):
+        return (
+            "Gemini API temporarily unavailable (503, peak load). "
+            "Wait a few minutes and retry the project."
+        )
+    if "429" in blob or "resource_exhausted" in low:
+        return "Gemini API rate limit or quota exceeded. Retry later or check API billing."
+
+    root = exc
+    while root.__cause__ is not None:
+        root = root.__cause__
+    root_line = str(root).strip().split("\n")[0]
+    if root_line:
+        msg = f"Pipeline error: {root_line}"
+        return msg if len(msg) <= max_len else msg[: max_len - 3] + "..."
+
+    line = str(exc).strip().split("\n")[0]
+    if line:
+        return line if len(line) <= max_len else line[: max_len - 3] + "..."
+    return "Internal pipeline error"
+
+
+def _is_transient_gemini_crash(exc: BaseException) -> bool:
+    """True when overload / quota errors suggest a Celery-level rerun may succeed."""
+    seen: set[int] = set()
+    cur: BaseException | None = exc
+    while cur is not None and id(cur) not in seen:
+        seen.add(id(cur))
+        if is_transient_gemini_http_error(cur):
+            return True
+        cur = cur.__cause__
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -1262,21 +1312,30 @@ async def run_pipeline(project_id: UUID) -> None:
 
     try:
         result = await compiled.ainvoke(initial_state)
-    except Exception:
+    except Exception as exc:
         logger.exception("Unhandled error in pipeline for project %s", project_id)
+        crash_summary = _pipeline_crash_error_summary(exc)
+        if _is_transient_gemini_crash(exc):
+            logger.warning(
+                "Transient Gemini/provider error for project %s — propagating for Celery retry: %s",
+                project_id,
+                crash_summary,
+            )
+            raise TransientGeminiError(crash_summary) from exc
+
         try:
             async with async_session_factory() as db:
                 project = await db.get(Project, project_id)
                 if project:
                     project.status = "failed"
-                    project.error_summary = "Internal pipeline error"
+                    project.error_summary = crash_summary
                     await db.commit()
         except Exception:
             logger.exception("Failed to persist crash status for %s", project_id)
 
         await _emit(str(project_id), "pipeline_complete", {
             "status": "failed",
-            "error": "Internal pipeline error",
+            "error": crash_summary,
         })
         return
 
