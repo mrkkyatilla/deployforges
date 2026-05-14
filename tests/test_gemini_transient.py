@@ -28,6 +28,20 @@ def test_retry_delay_bounded():
     assert 1.0 <= d <= 160.0
 
 
+def test_text_from_response_uses_parsed_when_text_missing():
+    from google.genai.types import GenerateContentResponse
+
+    from core.ai.gemini_client import _text_from_generate_response
+
+    r = GenerateContentResponse.model_construct(
+        parsed={"dockerfile": "FROM alpine", "dockerignore": "", "warnings": []},
+        candidates=None,
+    )
+    out = _text_from_generate_response(r, response_schema={"type": "object"})
+    assert "FROM alpine" in out
+    assert "dockerfile" in out
+
+
 def test_transient_crash_chain():
     inner = Exception("503 UNAVAILABLE high demand")
     try:

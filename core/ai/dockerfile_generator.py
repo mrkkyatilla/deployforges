@@ -302,9 +302,10 @@ class DockerfileGenerator:
                 data = repaired
 
         if data is None or not _dockerfile_is_plausible(str(data.get("dockerfile", ""))):
+            repair_err = f"; repair_parse={pr2.error!s}" if pr2 is not None else ""
             raise RuntimeError(
                 "AI Dockerfile generation returned no valid JSON Dockerfile after repair. "
-                f"parse_error={pr.error!s}"
+                f"parse_error={pr.error!s}{repair_err}"
             )
 
         total_tok = response.total_tokens + (repair_resp.total_tokens if repair_resp else 0)

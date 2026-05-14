@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import random
 import time
@@ -56,6 +57,81 @@ def _retry_delay_seconds(attempt: int, exc: Exception | None) -> float:
     if jitter > 0:
         raw *= max(0.1, 1.0 - jitter + (2 * jitter * random.random()))
     return max(1.0, raw)
+
+
+def _parsed_to_json_text(parsed: Any) -> str | None:
+    """Serialize SDK ``parsed`` field (schema mode) for downstream JSON parsers."""
+    if parsed is None:
+        return None
+    if isinstance(parsed, str):
+        s = parsed.strip()
+        return s if s else None
+    if isinstance(parsed, dict):
+        return json.dumps(parsed, default=str)
+    dump_json = getattr(parsed, "model_dump_json", None)
+    if callable(dump_json):
+        try:
+            out = dump_json()
+            if isinstance(out, str) and out.strip():
+                return out
+        except Exception:
+            pass
+    dump = getattr(parsed, "model_dump", None)
+    if callable(dump):
+        try:
+            return json.dumps(dump(), default=str)
+        except Exception:
+            pass
+    try:
+        return json.dumps(parsed, default=str)
+    except TypeError:
+        return None
+
+
+def _text_from_generate_response(
+    response: types.GenerateContentResponse,
+    *,
+    response_schema: dict[str, Any] | types.Schema | None,
+) -> str:
+    """Prefer ``response.text``; when empty in JSON/schema mode use ``response.parsed``."""
+    text = response.text or ""
+    if text.strip():
+        return text
+    if response_schema is None:
+        return text
+    parsed = getattr(response, "parsed", None)
+    serialized = _parsed_to_json_text(parsed)
+    return serialized if serialized else ""
+
+
+def _log_empty_gemini_response(
+    response: types.GenerateContentResponse,
+    *,
+    model_name: str,
+    io_log_label: str,
+) -> None:
+    try:
+        cand = response.candidates[0] if response.candidates else None
+        finish = getattr(cand, "finish_reason", None) if cand else None
+        block = getattr(response, "prompt_feedback", None)
+        parts_info = ""
+        if cand and cand.content and cand.content.parts:
+            names: list[str] = []
+            for p in cand.content.parts:
+                d = p.model_dump(exclude_none=True)
+                key = next((k for k, v in d.items() if v is not None and k != "thought"), "part")
+                names.append(key)
+            parts_info = repr(names[:12])
+        logger.error(
+            "Gemini empty text model=%s label=%s finish_reason=%s prompt_feedback=%s parts=%s",
+            model_name,
+            io_log_label,
+            finish,
+            block,
+            parts_info or "none",
+        )
+    except Exception:
+        logger.exception("Gemini empty body: logging detail failed")
 
 
 class GeminiClient:
@@ -124,6 +200,8 @@ class GeminiClient:
             config.response_schema = response_schema
 
         last_error: Exception | None = None
+        response: types.GenerateContentResponse | None = None
+        text = ""
         for attempt in range(1, settings.gemini_max_retries + 1):
             try:
                 response = await self._client.aio.models.generate_content(
@@ -131,7 +209,6 @@ class GeminiClient:
                     contents=prompt,
                     config=config,
                 )
-                break
             except Exception as exc:
                 last_error = exc
                 logger.warning("Gemini API attempt %d failed: %s", attempt, exc)
@@ -139,13 +216,38 @@ class GeminiClient:
                     delay = _retry_delay_seconds(attempt, exc)
                     logger.info("Gemini retry sleep %.1fs before attempt %d", delay, attempt + 1)
                     await asyncio.sleep(delay)
+                continue
+
+            text = _text_from_generate_response(
+                response,
+                response_schema=response_schema,
+            )
+            if text.strip():
+                break
+
+            logger.warning(
+                "Gemini returned empty body (attempt %d/%d) model=%s label=%s",
+                attempt,
+                settings.gemini_max_retries,
+                model_name,
+                io_log_label,
+            )
+            _log_empty_gemini_response(
+                response,
+                model_name=model_name,
+                io_log_label=io_log_label,
+            )
+            last_error = RuntimeError("Gemini returned empty response body")
+            if attempt < settings.gemini_max_retries:
+                delay = _retry_delay_seconds(attempt, last_error)
+                logger.info("Gemini empty-body retry sleep %.1fs", delay)
+                await asyncio.sleep(delay)
         else:
             msg = f"Gemini API failed after {settings.gemini_max_retries} retries"
             raise RuntimeError(msg) from last_error
 
         elapsed_ms = (time.perf_counter_ns() - start) // 1_000_000
         usage = response.usage_metadata
-        text = response.text or ""
 
         ep, er = self._maybe_excerpts(prompt, text)
         self._maybe_log_io(
