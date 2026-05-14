@@ -11,14 +11,17 @@
 #   export BASE=https://deploy.wrupup.com
 #   export DF_TEST_API_KEY=df_live_...   # optional: skip register
 #   export REPO=https://github.com/pallets/flask.git
+#   # optional: longer poll (default ~1h wall): export MAX_POLLS=100 POLL_INTERVAL=40
 #   bash scripts/vps-smoke.sh
 #
 set -euo pipefail
 
 BASE="${BASE:-https://deploy.wrupup.com}"
 REPO="${REPO:-https://github.com/pallets/flask.git}"
-POLL_INTERVAL="${POLL_INTERVAL:-30}"
-MAX_POLLS="${MAX_POLLS:-6}"
+# Wall-clock budget for GET /projects/{id} polling. Pipeline may run several docker builds
+# (DF_MAX_BUILD_ATTEMPTS × DF_BUILD_TIMEOUT_SECONDS) plus Gemini — defaults are ~1h.
+POLL_INTERVAL="${POLL_INTERVAL:-45}"
+MAX_POLLS="${MAX_POLLS:-80}"
 DF_TEST_API_KEY="${DF_TEST_API_KEY:-}"
 export DF_TEST_API_KEY
 
@@ -113,7 +116,8 @@ for i in $(seq 1 "$MAX_POLLS"); do
 done
 
 if [[ "$ST" != "success" && "$ST" != "failed" ]]; then
-  die "Zaman aşımı — MAX_POLLS veya POLL_INTERVAL artırın; celery-worker loglarına bakın"
+  approx_wait=$(( (MAX_POLLS - 1) * POLL_INTERVAL ))
+  die "Zaman aşımı — son status=$ST (~${approx_wait}s beklendi). MAX_POLLS veya POLL_INTERVAL artırın; sunucuda DF_CELERY_PIPELINE_TASK_TIME_LIMIT_SECONDS ve worker loglarına bakın"
 fi
 
 if [[ "$ST" == "failed" ]]; then

@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     celery_transient_max_retries: int = 3
     celery_transient_retry_countdown_base: int = 90
     celery_transient_retry_countdown_max: int = 600
+    # Whole LangGraph pipeline (clone → AI → multiple docker builds + fixes + deploy) runs in one Celery task.
+    # Must exceed worst-case: ``max_build_attempts * build_timeout_seconds`` plus Gemini / deploy slack.
+    celery_pipeline_task_time_limit_seconds: int = 7200
+    celery_pipeline_task_soft_time_limit_seconds: int = 6600
 
     # When True: log truncated Gemini prompt/response (masked). Do not enable in untrusted log sinks.
     ai_debug_io: bool = False
