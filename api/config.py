@@ -47,6 +47,10 @@ class Settings(BaseSettings):
     # After primary model exhausts retries on transient errors, try this model once (same retry loop).
     gemini_fallback_model: str = ""
 
+    # When the model returns HTTP 200 but no text (often FinishReason.MAX_TOKENS), bump
+    # max_output_tokens up to this cap before counting as a failed outer retry.
+    gemini_max_output_tokens_cap: int = 24576
+
     # Celery: only ``TransientGeminiError`` triggers full-pipeline retries (503/429 overload).
     celery_transient_max_retries: int = 3
     celery_transient_retry_countdown_base: int = 90

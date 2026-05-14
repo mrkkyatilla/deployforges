@@ -169,6 +169,11 @@ def _pipeline_crash_error_summary(exc: BaseException, *, max_len: int = 1800) ->
         )
     if "429" in blob or "resource_exhausted" in low:
         return "Gemini API rate limit or quota exceeded. Retry later or check API billing."
+    if "MAX_TOKENS" in blob.upper() and "empty response body" in low:
+        return (
+            "Gemini produced no JSON before hitting the output token limit (MAX_TOKENS). "
+            "Reduce prompt/context size, or raise DF_GEMINI_MAX_OUTPUT_TOKENS_CAP (default 16384)."
+        )
 
     root = exc
     while root.__cause__ is not None:

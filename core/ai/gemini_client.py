@@ -106,6 +106,27 @@ def _text_from_generate_response(
     return serialized if serialized else ""
 
 
+def _finish_reason_tag(response: types.GenerateContentResponse) -> str:
+    try:
+        cand = response.candidates[0] if response.candidates else None
+        fr = getattr(cand, "finish_reason", None) if cand else None
+        return str(fr) if fr is not None else "none"
+    except Exception:
+        return "unknown"
+
+
+def _empty_body_likely_max_tokens(response: types.GenerateContentResponse) -> bool:
+    try:
+        cand = response.candidates[0] if response.candidates else None
+        if not cand:
+            return False
+        fr = getattr(cand, "finish_reason", None)
+        name = (getattr(fr, "name", None) or str(fr)).upper()
+        return "MAX_TOKEN" in name
+    except Exception:
+        return False
+
+
 def _log_empty_gemini_response(
     response: types.GenerateContentResponse,
     *,
@@ -191,58 +212,87 @@ class GeminiClient:
         io_log_label: str,
     ) -> AIResponse:
         start = time.perf_counter_ns()
-        config = types.GenerateContentConfig(
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            system_instruction=system_instruction,
-        )
-        if response_mime_type:
-            config.response_mime_type = response_mime_type
-        if response_schema is not None:
-            config.response_schema = response_schema
-
+        out_cap = int(settings.gemini_max_output_tokens_cap)
         last_error: Exception | None = None
         response: types.GenerateContentResponse | None = None
         text = ""
-        for attempt in range(1, settings.gemini_max_retries + 1):
-            try:
-                response = await self._client.aio.models.generate_content(
-                    model=model_name,
-                    contents=prompt,
-                    config=config,
-                )
-            except Exception as exc:
-                last_error = exc
-                logger.warning("Gemini API attempt %d failed: %s", attempt, exc)
-                if attempt < settings.gemini_max_retries:
-                    delay = _retry_delay_seconds(attempt, exc)
-                    logger.info("Gemini retry sleep %.1fs before attempt %d", delay, attempt + 1)
-                    await asyncio.sleep(delay)
-                continue
 
-            text = _text_from_generate_response(
-                response,
-                response_schema=response_schema,
-            )
-            if text.strip():
+        for attempt in range(1, settings.gemini_max_retries + 1):
+            eff_max_out = min(out_cap, int(max_output_tokens))
+            got_text = False
+
+            while True:
+                config = types.GenerateContentConfig(
+                    temperature=temperature,
+                    max_output_tokens=eff_max_out,
+                    system_instruction=system_instruction,
+                )
+                if response_mime_type:
+                    config.response_mime_type = response_mime_type
+                if response_schema is not None:
+                    config.response_schema = response_schema
+
+                try:
+                    response = await self._client.aio.models.generate_content(
+                        model=model_name,
+                        contents=prompt,
+                        config=config,
+                    )
+                except Exception as exc:
+                    last_error = exc
+                    logger.warning("Gemini API attempt %d failed: %s", attempt, exc)
+                    break
+
+                text = _text_from_generate_response(
+                    response,
+                    response_schema=response_schema,
+                )
+                if text.strip():
+                    got_text = True
+                    break
+
+                fr_tag = _finish_reason_tag(response)
+                if _empty_body_likely_max_tokens(response) and eff_max_out < out_cap:
+                    next_max = min(out_cap, max(eff_max_out * 2, eff_max_out + 4096))
+                    if next_max > eff_max_out:
+                        logger.warning(
+                            "Gemini empty body with %s; retrying same step with max_output_tokens=%d "
+                            "(was %d, outer_attempt=%d/%d, model=%s label=%s)",
+                            fr_tag,
+                            next_max,
+                            eff_max_out,
+                            attempt,
+                            settings.gemini_max_retries,
+                            model_name,
+                            io_log_label,
+                        )
+                        eff_max_out = next_max
+                        continue
+
+                logger.warning(
+                    "Gemini returned empty body (outer_attempt %d/%d) model=%s label=%s finish=%s",
+                    attempt,
+                    settings.gemini_max_retries,
+                    model_name,
+                    io_log_label,
+                    fr_tag,
+                )
+                _log_empty_gemini_response(
+                    response,
+                    model_name=model_name,
+                    io_log_label=io_log_label,
+                )
+                last_error = RuntimeError(
+                    f"Gemini returned empty response body (finish={fr_tag})"
+                )
                 break
 
-            logger.warning(
-                "Gemini returned empty body (attempt %d/%d) model=%s label=%s",
-                attempt,
-                settings.gemini_max_retries,
-                model_name,
-                io_log_label,
-            )
-            _log_empty_gemini_response(
-                response,
-                model_name=model_name,
-                io_log_label=io_log_label,
-            )
-            last_error = RuntimeError("Gemini returned empty response body")
+            if got_text:
+                break
+
             if attempt < settings.gemini_max_retries:
                 delay = _retry_delay_seconds(attempt, last_error)
-                logger.info("Gemini empty-body retry sleep %.1fs", delay)
+                logger.info("Gemini retry sleep %.1fs before attempt %d", delay, attempt + 1)
                 await asyncio.sleep(delay)
         else:
             msg = f"Gemini API failed after {settings.gemini_max_retries} retries"
