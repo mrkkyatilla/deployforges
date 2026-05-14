@@ -2,6 +2,11 @@
 # DeployForge VPS smoke: register (optional) -> create project -> poll -> print Dockerfile.
 # Uses curl WITHOUT -f so 429 bodies are visible. Safe with set -u (DF_TEST_API_KEY defaults to "").
 #
+# Run from the deployforges repo root (always up to date):
+#   cd /path/to/deployforges && bash scripts/vps-smoke.sh
+# If you keep a copy in another folder (e.g. out_of_stack), re-copy after git pull:
+#   cp /path/to/deployforges/scripts/vps-smoke.sh ./
+#
 # Usage:
 #   export BASE=https://deploy.wrupup.com
 #   export DF_TEST_API_KEY=df_live_...   # optional: skip register
@@ -133,6 +138,9 @@ read_body | python3 -c "
 import sys, json
 r = json.load(sys.stdin)
 print('status:', r.get('status'))
+es = r.get('error_summary')
+if es:
+    print('error_summary:', es)
 res = r.get('result') or {}
 df = res.get('dockerfile')
 if df:

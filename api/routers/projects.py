@@ -365,6 +365,7 @@ async def get_project_result(
         status=project.status,
         result=result,
         usage=usage,
+        error_summary=project.error_summary,
     )
 
 

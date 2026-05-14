@@ -105,6 +105,8 @@ class ProjectResultResponse(BaseModel):
     status: str
     result: ProjectResult | None = None
     usage: UsageInfo | None = None
+    # When status is failed, explains worker/pipeline failure (same DB column as GET /projects/{id}).
+    error_summary: str | None = None
 
 
 class ProjectSummary(BaseModel):
