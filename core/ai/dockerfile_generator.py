@@ -391,7 +391,7 @@ class DockerfileGenerator:
             response_schema=meta_schema,
             io_log_label="dockerfile_generation_metadata",
         )
-        token_budget.record("generation", resp_meta.total_tokens)
+        token_budget.record("generation_metadata", resp_meta.total_tokens)
 
         prm = parse_model_json_from_ai_response(resp_meta.text, resp_meta.parsed_dict)
         meta_data = prm.data
@@ -415,7 +415,7 @@ class DockerfileGenerator:
             )
             if repaired_m is not None:
                 if repair_meta is not None:
-                    token_budget.record("generation", repair_meta.total_tokens)
+                    token_budget.record("generation_metadata", repair_meta.total_tokens)
                     prm2 = parse_model_json_from_ai_response(
                         repair_meta.text, repair_meta.parsed_dict
                     )
@@ -450,7 +450,7 @@ class DockerfileGenerator:
             response_schema=None,
             io_log_label="dockerfile_generation_body",
         )
-        token_budget.record("generation", resp_body.total_tokens)
+        token_budget.record("generation_body", resp_body.total_tokens)
 
         dockerfile = _strip_plain_dockerfile_body(resp_body.text)
         if not _dockerfile_is_plausible(dockerfile):
@@ -478,6 +478,18 @@ class DockerfileGenerator:
         meta_io["two_phase"] = True
         meta_io["phase2_model"] = resp_body.model
         meta_io["phase2_tokens"] = resp_body.total_tokens
+        meta_io["metadata_total_tokens"] = resp_meta.total_tokens + (
+            repair_meta.total_tokens if repair_meta else 0
+        )
+        meta_io["metadata_prompt_tokens"] = resp_meta.prompt_tokens + (
+            repair_meta.prompt_tokens if repair_meta else 0
+        )
+        meta_io["metadata_completion_tokens"] = resp_meta.completion_tokens + (
+            repair_meta.completion_tokens if repair_meta else 0
+        )
+        meta_io["body_prompt_tokens"] = resp_body.prompt_tokens
+        meta_io["body_completion_tokens"] = resp_body.completion_tokens
+        meta_io["body_total_tokens"] = resp_body.total_tokens
         result.io_meta = meta_io
         _warn_if_sparse_comments(result.dockerfile)
         return result

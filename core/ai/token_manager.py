@@ -31,6 +31,9 @@ COMPLEXITY_THRESHOLDS = {
     "dockerfile_critic": "gemini-2.5-flash",
     "dockerfile_refine": "gemini-2.5-pro",
     "generation": "gemini-2.5-pro",
+    # Two-phase Dockerfile: breakdown keys only (can_spend still uses ``generation``).
+    "generation_metadata": "gemini-2.5-flash",
+    "generation_body": "gemini-2.5-pro",
     "complex_fix": "gemini-2.5-pro",
     "compose": "gemini-2.5-pro",
 }

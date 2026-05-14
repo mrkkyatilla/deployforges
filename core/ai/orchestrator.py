@@ -448,15 +448,46 @@ async def generate_dockerfile_node(state: DeployForgeState) -> dict[str, Any]:
 
     try:
         async with async_session_factory() as db:
-            db.add(AIInteraction(
-                project_id=UUID(pid),
-                interaction_type="generation",
-                prompt_tokens=gen_result.tokens_used,
-                completion_tokens=0,
-                model_used=settings.gemini_pro_model,
-                latency_ms=0,
-                extra=gen_extra,
-            ))
+            io = gen_result.io_meta or {}
+            if io.get("two_phase"):
+                mpt = int(io.get("metadata_prompt_tokens") or 0)
+                mct = int(io.get("metadata_completion_tokens") or 0)
+                bpt = int(io.get("body_prompt_tokens") or 0)
+                bct = int(io.get("body_completion_tokens") or 0)
+                db.add(
+                    AIInteraction(
+                        project_id=UUID(pid),
+                        interaction_type="generation_metadata",
+                        prompt_tokens=mpt,
+                        completion_tokens=mct,
+                        model_used=settings.gemini_flash_model,
+                        latency_ms=0,
+                        extra=gen_extra,
+                    )
+                )
+                db.add(
+                    AIInteraction(
+                        project_id=UUID(pid),
+                        interaction_type="generation_body",
+                        prompt_tokens=bpt,
+                        completion_tokens=bct,
+                        model_used=settings.gemini_pro_model,
+                        latency_ms=0,
+                        extra=None,
+                    )
+                )
+            else:
+                db.add(
+                    AIInteraction(
+                        project_id=UUID(pid),
+                        interaction_type="generation",
+                        prompt_tokens=gen_result.tokens_used,
+                        completion_tokens=0,
+                        model_used=settings.gemini_pro_model,
+                        latency_ms=0,
+                        extra=gen_extra,
+                    )
+                )
             await db.commit()
     except Exception:
         logger.warning("Failed to persist AI interaction record", exc_info=True)

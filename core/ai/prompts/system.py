@@ -70,8 +70,8 @@ Keep or add brief `#` comments before major stages so operators can follow the f
 
 ## Output Format
 
-Respond ONLY with valid JSON. **Critical:** escape double-quotes inside every string value; do not emit raw
-newlines inside JSON strings.
+Respond ONLY with valid JSON. **Critical:** escape double-quotes inside every string value (especially
+``dockerfile`` and ``dockerignore``); do not emit raw newlines inside JSON strings.
 
 {
   "analysis_summary": "What caused the error and what was changed",

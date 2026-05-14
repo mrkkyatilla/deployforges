@@ -168,7 +168,7 @@ Query params for reporter: ``period_days`` (1–90), ``include_llm`` (default fa
 
 ### Large repositories and Gemini Files API
 
-Monorepos and very large trees stress inline JSON (embedded Dockerfile strings can hit **MAX_TOKENS** or break parsing). DeployForge defaults to **two-phase** generation: a compact metadata JSON step, then a **plain-text** Dockerfile body (`DF_AI_DOCKERFILE_TWO_PHASE_ENABLED`, default on). Tighter **critical-file** budgets apply when the fingerprint looks high-complexity (monorepo, multi-deps, many services).
+Monorepos and very large trees stress inline JSON (embedded Dockerfile strings can hit **MAX_TOKENS** or break parsing). DeployForge defaults to **two-phase** generation: a compact metadata JSON step, then a **plain-text** Dockerfile body (`DF_AI_DOCKERFILE_TWO_PHASE_ENABLED`, default on). Tighter **critical-file** budgets apply when the fingerprint looks high-complexity (monorepo, multi-deps, many services). Pipeline **token_breakdown** then lists ``generation_metadata`` (Flash) and ``generation_body`` (Pro) instead of a single ``generation`` row; in-app cost estimates use the matching model per key.
 
 `DF_GEMINI_FILES_API_PROMPT_TOKEN_THRESHOLD` is a **reserved** hook: at **0** (default) nothing uses the Files API. A future version may upload oversized artifacts when estimated prompt tokens exceed this threshold, instead of pasting megabytes into the prompt.
 

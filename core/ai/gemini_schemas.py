@@ -188,12 +188,25 @@ def schema_dockerfile_generation() -> types.Schema:
 def schema_dockerfile_fix() -> types.Schema:
     """Matches ``ERROR_FIX_SYSTEM_PROMPT`` JSON shape."""
     str_item = types.Schema(type=_T.STRING)
+    esc = (
+        "Inside JSON strings escape every literal double-quote as \\\" and avoid raw newlines (use \\n). "
+        "Unterminated strings break parsing."
+    )
     return types.Schema(
         type=_T.OBJECT,
         properties={
-            "analysis_summary": types.Schema(type=_T.STRING),
-            "dockerfile": types.Schema(type=_T.STRING),
-            "dockerignore": types.Schema(type=_T.STRING),
+            "analysis_summary": types.Schema(
+                type=_T.STRING,
+                description=f"What failed and what changed. {esc}",
+            ),
+            "dockerfile": types.Schema(
+                type=_T.STRING,
+                description=f"Complete fixed Dockerfile. {esc}",
+            ),
+            "dockerignore": types.Schema(
+                type=_T.STRING,
+                description=f".dockerignore body. {esc}",
+            ),
             "warnings": types.Schema(type=_T.ARRAY, items=str_item),
             "changes_made": types.Schema(type=_T.ARRAY, items=str_item),
         },
