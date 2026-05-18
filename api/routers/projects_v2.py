@@ -90,10 +90,27 @@ async def create_project_v2(
         manifest_version="1",
     )
     db.add(project)
-    await db.flush()
-    project.workspace_path = str(settings.workspace_base_path / str(project.id))
-    await db.flush()
-    await db.refresh(project)
+    try:
+        await db.flush()
+        project.workspace_path = str(settings.workspace_base_path / str(project.id))
+        await db.flush()
+        await db.refresh(project)
+    except Exception as exc:
+        await db.rollback()
+        err = str(exc).lower()
+        logger.exception("create_project_v2 DB flush failed")
+        if "manifest_version" in err or "final_manifest" in err or "undefinedcolumn" in err:
+            raise HTTPException(
+                status_code=503,
+                detail=(
+                    "Database schema is missing v2 columns (final_manifest, manifest_version). "
+                    "On the VPS run: alembic upgrade head, then rebuild and restart api + celery-worker."
+                ),
+            ) from exc
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to create project: {exc!s}",
+        ) from exc
 
     created_at = project.created_at or datetime.now(timezone.utc)
     base = f"/api/v2/projects/{project.id}"

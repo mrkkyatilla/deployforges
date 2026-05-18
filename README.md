@@ -118,13 +118,29 @@ DF_PIPELINE_MODE=multi_service
 
 CLI: `deployforge deploy <source> --api-version v2`
 
-### VPS / production smoke (repo → Dockerfile)
+### VPS / production smoke (repo → manifest / Dockerfile)
 
-From repo root (set `BASE` and optional `DF_TEST_API_KEY`):
+Varsayılan hedef: `https://deploy.wrupup.com`, API **v2** (DeploymentManifest).
 
 ```bash
-BASE=https://your-api.example.com bash scripts/vps-smoke.sh
+cd deployforges
+bash scripts/vps-smoke.sh
+
+# Monorepo (multi-service) profili — daha uzun sürer
+REPO_PROFILE=monorepo bash scripts/vps-smoke.sh
+
+# Hızlı poll, özet çıktı (tam Dockerfile için PRINT_FULL=1)
+SMOKE_QUICK=1 bash scripts/vps-smoke.sh
+
+# Mevcut anahtar + tam artifact dump
+export DF_TEST_API_KEY=df_live_...
+PRINT_FULL=1 bash scripts/vps-smoke.sh
+
+# Klasik v1 sonuç
+API_VERSION=v1 bash scripts/vps-smoke.sh
 ```
+
+Ortam: `BASE`, `API_VERSION` (`v2`|`v1`|`both`), `REPO`, `REPO_PROFILE` (`simple`|`monorepo`).
 
 After `git pull` on the VPS, **rebuild** the worker image so intake/security fixes ship:  
 `docker compose -f deploy/docker-compose.vps.yml build --no-cache celery-worker api && docker compose -f deploy/docker-compose.vps.yml up -d`

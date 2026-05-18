@@ -34,14 +34,21 @@ Docker Compose VPS sets `DF_PIPELINE_ENQUEUE_MODE=celery` on the **api** service
 
 ## Client polling (`scripts/vps-smoke.sh`)
 
-The smoke script polls `GET /api/v1/projects/{id}` until status is terminal.
+Smoke targets **https://deploy.wrupup.com** by default with `API_VERSION=v2` (manifest result).
 
 | Variable | Default | Meaning |
 |----------|---------|---------|
-| `POLL_INTERVAL` | 45 | Seconds between polls. |
-| `MAX_POLLS` | 80 | Maximum polls (~1 hour at defaults). |
+| `BASE` | `https://deploy.wrupup.com` | API origin |
+| `API_VERSION` | `v2` | `v2`, `v1`, or `both` |
+| `REPO_PROFILE` | `simple` | `simple` (Flask) or `monorepo` (full-stack template) |
+| `SMOKE_QUICK` | `0` | `1` → shorter poll budget |
+| `PRINT_FULL` | `0` | `1` → print all Dockerfiles / compose |
+| `POLL_INTERVAL` | 45 (30 if quick) | Seconds between polls |
+| `MAX_POLLS` | 80 (50 if quick) | Maximum polls |
 
-Increase both when running against large repos or when `DF_MAX_BUILD_ATTEMPTS` / `DF_BUILD_TIMEOUT_SECONDS` are raised above defaults.
+Terminal statuses include `success`, `partial`, and `failed` (v2 multi-service).
+
+Increase poll budget for large repos or high `DF_MAX_BUILD_ATTEMPTS` / `DF_BUILD_TIMEOUT_SECONDS`.
 
 ## SSE events
 
