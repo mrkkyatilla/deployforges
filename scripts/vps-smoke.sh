@@ -58,6 +58,7 @@ else
   MAX_POLLS="${MAX_POLLS:-80}"
 fi
 PRINT_FULL="${PRINT_FULL:-0}"
+FALLBACK_V1_ON_V2_ERROR="${FALLBACK_V1_ON_V2_ERROR:-1}"
 
 die() { echo "ERROR: $*" >&2; exit 1; }
 info() { echo ">>> $*" >&2; }
@@ -77,14 +78,22 @@ print_http_error_body() {
   fi
 }
 
-die_http() {
+# Prints body and returns 1 (does not exit) — caller decides fallback vs die.
+fail_http() {
   local ctx="$1" code="$2"
   print_http_error_body
   cleanup_body
-  if [[ "$code" == "500" && "$ctx" == *"v2"* ]]; then
-    die "create project [$ctx] HTTP $code — sunucuda muhtemelen DB migration veya yeni API imajı yok. VPS: cd /opt/deployforges && alembic upgrade head && docker compose -f deploy/docker-compose.vps.yml build api celery-worker && docker compose -f deploy/docker-compose.vps.yml up -d. Geçici: API_VERSION=v1 bash scripts/vps-smoke.sh"
+  echo "ERROR: ${ctx} HTTP ${code}" >&2
+  if [[ "$code" == "500" && "$ctx" == v2* ]]; then
+    echo "ERROR: v2 sunucuda hazır değil (eski imaj veya DB migration eksik)." >&2
+    echo "  VPS: cd /opt/deployforges && git pull && alembic upgrade head \\" >&2
+    echo "       && docker compose -f deploy/docker-compose.vps.yml build --no-cache api celery-worker \\" >&2
+    echo "       && docker compose -f deploy/docker-compose.vps.yml up -d" >&2
+    echo "  .env: DF_PIPELINE_MODE=multi_service" >&2
+    echo "  Geçici test: API_VERSION=v1 bash scripts/vps-smoke.sh" >&2
+    echo "  Otomatik v1: FALLBACK_V1_ON_V2_ERROR=1 (varsayılan)" >&2
   fi
-  die "${ctx} HTTP ${code}"
+  return 1
 }
 
 __HTTP_CODE=""
@@ -152,8 +161,47 @@ health_check() {
 import sys, json
 j = json.load(sys.stdin)
 print('  status:', j.get('status'), '| version:', j.get('version', '?'))
+feats = j.get('features') or {}
+if feats:
+    print('  features:', feats)
+if j.get('pipeline_mode'):
+    print('  server pipeline_mode:', j.get('pipeline_mode'))
+if j.get('api_versions'):
+    print('  api_versions:', j.get('api_versions'))
 " >&2
   cleanup_body
+}
+
+check_v2_ready() {
+  [[ "$API_VERSION" == "v1" ]] && return 0
+  info "v2 hazırlık: OpenAPI + health features"
+  http_request GET "${BASE}/openapi.json"
+  local has_v2=0
+  if [[ "$__HTTP_CODE" == "2"* ]] && grep -q '"/api/v2/projects/' "$__BODY_FILE" 2>/dev/null; then
+    has_v2=1
+    info "  OpenAPI: /api/v2/projects bulundu"
+  else
+    warn "  OpenAPI: /api/v2/projects yok (eski API imajı)"
+  fi
+  cleanup_body
+  http_request GET "${BASE}/api/v1/health"
+  local has_manifest=0
+  if [[ "$__HTTP_CODE" == "2"* ]]; then
+    if read_body | python3 -c "import sys,json; j=json.load(sys.stdin); exit(0 if (j.get('features') or {}).get('deployment_manifest_v1') else 1)" 2>/dev/null; then
+      has_manifest=1
+      info "  health: deployment_manifest_v1=true"
+    else
+      warn "  health: deployment_manifest_v1 yok (eski API — yeniden build gerekir)"
+    fi
+    cleanup_body
+  else
+    cleanup_body
+  fi
+  if [[ "$has_v2" -eq 0 || "$has_manifest" -eq 0 ]]; then
+    warn "Sunucu v2 için güncel değil; create muhtemelen 500 döner."
+    return 1
+  fi
+  return 0
 }
 
 create_project() {
@@ -165,13 +213,16 @@ create_project() {
   payload="$(python3 -c "import json; print(json.dumps({'source': {'type': 'git', 'url': '''${REPO}'''}}))")"
   http_request POST "${prefix}/projects/" "$payload"
   if [[ "$__HTTP_CODE" == "429" ]]; then
-    die_http "create project [$ver] (rate limit)" "429"
+    fail_http "create project $ver (rate limit)" "429"
+    return 1
   fi
   if [[ -z "$__HTTP_CODE" ]]; then
-    die "create project [$ver]: curl failed (HTTP code boş) — ağ / BASE kontrol edin"
+    echo "ERROR: create project $ver: curl failed (HTTP code boş)" >&2
+    return 1
   fi
   if [[ "$__HTTP_CODE" != "2"* ]]; then
-    die_http "create project [$ver]" "$__HTTP_CODE"
+    fail_http "create project $ver" "$__HTTP_CODE"
+    return 1
   fi
   local body pid
   body="$(read_body)"
@@ -383,12 +434,11 @@ run_smoke_version() {
   local ver="$1"
   info "=== Smoke API $ver === (BASE=$BASE REPO_PROFILE=$REPO_PROFILE)"
   local pid
-  pid="$(create_project "$ver")" || {
-    local ec=$?
-    die "create_project [$ver] failed (exit $ec)"
-  }
+  if ! pid="$(create_project "$ver")"; then
+    return 1
+  fi
   if ! is_uuid "$pid"; then
-    die "create_project [$ver] returned non-uuid: '$pid'"
+    die "create_project $ver returned non-uuid: '$pid'"
   fi
   info "PID=$pid"
   local st
@@ -418,11 +468,19 @@ export PRINT_FULL
 
 health_check
 ensure_api_key
+check_v2_ready || true
 
 rc=0
 case "$API_VERSION" in
   v2)
-    run_smoke_version v2 || rc=1
+    if ! run_smoke_version v2; then
+      if [[ "$FALLBACK_V1_ON_V2_ERROR" == "1" ]]; then
+        warn "v2 smoke başarısız — v1 fallback deneniyor (FALLBACK_V1_ON_V2_ERROR=0 ile kapatılır)"
+        run_smoke_version v1 || rc=1
+      else
+        rc=1
+      fi
+    fi
     ;;
   v1)
     run_smoke_version v1 || rc=1

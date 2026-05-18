@@ -96,7 +96,16 @@ app.include_router(traces.router, prefix="/api/v1")
 
 @app.get("/api/v1/health", tags=["health"])
 async def health_check():
-    return {"status": "ok", "version": settings.app_version}
+    return {
+        "status": "ok",
+        "version": settings.app_version,
+        "api_versions": ["v1", "v2"],
+        "pipeline_mode": settings.pipeline_mode,
+        "features": {
+            "deployment_manifest_v1": True,
+            "multi_service_pipeline": settings.pipeline_mode == "multi_service",
+        },
+    }
 
 
 @app.get("/api/v1/languages", tags=["health"])
