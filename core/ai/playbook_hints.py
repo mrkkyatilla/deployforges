@@ -58,11 +58,20 @@ def static_hints_for_fingerprint(fingerprint: dict | None) -> list[str]:
     return out[:5]
 
 
-def playbook_redis_key(lang: str, fw: str, error_name: str) -> str:
+def playbook_redis_key(
+    lang: str,
+    fw: str,
+    error_name: str,
+    *,
+    service_type: str | None = None,
+) -> str:
     data = _load_playbook_yaml()
     prefix = str(data.get("redis_prefix") or "df:playbook:v1")
     fw_n = (fw or "unknown").lower().replace(" ", "_")[:48]
     en = (error_name or "unknown").lower().replace(" ", "_")[:64]
+    st = (service_type or "").lower().replace(" ", "_")[:24]
+    if st:
+        return f"{prefix}:{lang}:{fw_n}:{st}:{en}"
     return f"{prefix}:{lang}:{fw_n}:{en}"
 
 
@@ -82,6 +91,8 @@ async def collect_playbook_hints_for_prompt(fingerprint: dict | None) -> list[st
     fp = fingerprint or {}
     lang = str((fp.get("language") or {}).get("primary") or "unknown").lower()
     fw = str((fp.get("framework") or {}).get("name") or "unknown")
+    env = fp.get("environment") if isinstance(fp.get("environment"), dict) else {}
+    svc_type = str(env.get("service_type") or "")
 
     ttl = int(getattr(settings, "ai_playbook_hint_ttl_seconds", 0) or 0)
     if ttl <= 0:
@@ -90,7 +101,7 @@ async def collect_playbook_hints_for_prompt(fingerprint: dict | None) -> list[st
     keys: list[str] = []
     for name in sorted((_load_playbook_yaml().get("redis_bootstrap_error_names") or [])):
         if isinstance(name, str) and name.strip():
-            keys.append(playbook_redis_key(lang, fw, name.strip()))
+            keys.append(playbook_redis_key(lang, fw, name.strip(), service_type=svc_type or None))
 
     if not keys:
         return hints[:5]
@@ -146,7 +157,9 @@ async def record_playbook_hints_on_success(
         text = error_hint_template(name)
         if not text:
             continue
-        key = playbook_redis_key(lang, fw, name)
+        env = fp.get("environment") if isinstance(fp.get("environment"), dict) else {}
+        st = str(env.get("service_type") or "")
+        key = playbook_redis_key(lang, fw, name, service_type=st or None)
         payload = json.dumps({"text": text, "name": name}, default=str)
         try:
             import redis.asyncio as aioredis

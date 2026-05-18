@@ -8,8 +8,9 @@ import httpx
 
 
 class DeployForgeClient:
-    def __init__(self, api_key: str, endpoint: str) -> None:
+    def __init__(self, api_key: str, endpoint: str, *, api_version: str = "v1") -> None:
         self.endpoint = endpoint.rstrip("/")
+        self.api_version = api_version
         self._client = httpx.Client(
             base_url=self.endpoint,
             headers={
@@ -46,17 +47,33 @@ class DeployForgeClient:
         if options:
             payload.update(options)
 
-        resp = self._client.post("/api/v1/projects", json=payload)
+        if self.api_version == "v2":
+            v2_body = {
+                "source": {
+                    "type": "git" if source_type in ("git", "git_url") else source_type,
+                    "url": source_url,
+                    "branch": branch,
+                },
+            }
+            if commit:
+                v2_body["source"]["commit"] = commit
+            if options:
+                v2_body["options"] = options
+            resp = self._client.post("/api/v2/projects", json=v2_body)
+        else:
+            resp = self._client.post("/api/v1/projects", json=payload)
         resp.raise_for_status()
         return resp.json()
 
     def get_project(self, project_id: str) -> dict[str, Any]:
-        resp = self._client.get(f"/api/v1/projects/{project_id}")
+        prefix = f"/api/{self.api_version}"
+        resp = self._client.get(f"{prefix}/projects/{project_id}")
         resp.raise_for_status()
         return resp.json()
 
     def get_result(self, project_id: str) -> dict[str, Any]:
-        resp = self._client.get(f"/api/v1/projects/{project_id}/result")
+        prefix = f"/api/{self.api_version}"
+        resp = self._client.get(f"{prefix}/projects/{project_id}/result")
         resp.raise_for_status()
         return resp.json()
 

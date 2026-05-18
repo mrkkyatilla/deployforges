@@ -94,6 +94,30 @@ curl http://localhost:8000/api/v1/projects/{id}/result \
 
 ```
 
+### API v2 (DeploymentManifest, multi-service)
+
+v1 is deprecated (see `Deprecation` / `Sunset` headers on `/api/v1/projects/{id}/result`).
+
+```bash
+# Create (same intake shape as v1)
+curl -X POST http://localhost:8000/api/v2/projects \
+  -H "X-API-Key: df_live_abc123..." \
+  -H "Content-Type: application/json" \
+  -d '{"source": {"type": "git", "url": "https://github.com/user/repo.git"}}'
+
+# Manifest result
+curl http://localhost:8000/api/v2/projects/{id}/result \
+  -H "X-API-Key: df_live_abc123..."
+```
+
+Enable multi-service pipeline on the worker:
+
+```bash
+DF_PIPELINE_MODE=multi_service
+```
+
+CLI: `deployforge deploy <source> --api-version v2`
+
 ### VPS / production smoke (repo → Dockerfile)
 
 From repo root (set `BASE` and optional `DF_TEST_API_KEY`):

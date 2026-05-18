@@ -217,6 +217,12 @@ def login() -> None:
     help="Çıktı formatı.",
 )
 @click.option("--max-attempts", default=5, help="Maksimum build deneme sayısı.", show_default=True)
+@click.option(
+    "--api-version",
+    type=click.Choice(["v1", "v2"]),
+    default="v1",
+    help="API sürümü (v2 = DeploymentManifest).",
+)
 def deploy(
     source: str,
     branch: str,
@@ -224,10 +230,12 @@ def deploy(
     output: str | None,
     fmt: str | None,
     max_attempts: int,
+    api_version: str,
 ) -> None:
     """Bir projeyi analiz et, Dockerfile üret ve deploy et.
 
     SOURCE bir git URL'si, yerel dizin veya dosya yolu olabilir.
+    v2 API ile DeploymentManifest (multi-service) döner.
     """
     config = load_config()
     api_key = get_api_key()
@@ -247,7 +255,9 @@ def deploy(
         if fmt == "human":
             _print_step("success", "Proje arşivlendi")
 
-    with DeployForgeClient(api_key=api_key, endpoint=endpoint) as client:
+    with DeployForgeClient(
+        api_key=api_key, endpoint=endpoint, api_version=api_version,
+    ) as client:
         try:
             if fmt == "human":
                 _print_step("pending", "Proje alınıyor...")

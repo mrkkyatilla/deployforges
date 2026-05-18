@@ -480,6 +480,64 @@ class DockerfileGenerator:
             playbook_hints=playbook_hints,
         )
 
+    async def generate_for_service(
+        self,
+        repo_root: str,
+        service_root: str,
+        service_fingerprint: dict,
+        token_budget: TokenBudget,
+        *,
+        pipeline_policy: DockerfilePipelinePolicy | None = None,
+        playbook_hints: list[str] | None = None,
+    ) -> DockerfileResult:
+        """Generate Dockerfile for one monorepo service (context = service directory)."""
+        from pathlib import Path
+
+        repo = Path(repo_root)
+        rel = service_root.strip().lstrip("./")
+        svc_path = str((repo / rel).resolve())
+        policy = pipeline_policy or resolve_dockerfile_pipeline_policy(
+            service_fingerprint, settings,
+        )
+
+        if settings.ai_dockerfile_template_first_enabled:
+            if fingerprint_allows_template_first(repo_root, service_fingerprint, rel):
+                rendered = render_template_dockerfile(
+                    repo_root, service_fingerprint, service_root=rel,
+                )
+                if rendered and _dockerfile_is_plausible(rendered):
+                    ign = (
+                        ".git\n__pycache__\n*.pyc\n.pytest_cache\n.venv\nvenv\n"
+                        "node_modules\ndist\n.next\n.env\n*.log\n"
+                    )
+                    result = DockerfileResult(
+                        dockerfile=rendered,
+                        dockerignore=ign,
+                        analysis_summary=f"Template-first Dockerfile for service at {rel}.",
+                        warnings=["template_first_deterministic"],
+                        tokens_used=0,
+                    )
+                    result.io_meta = {
+                        "interaction": "generation",
+                        "template_first": True,
+                        "service_root": rel,
+                        "generation_method": "template",
+                    }
+                    return result
+
+        result = await self.generate(
+            fingerprint=service_fingerprint,
+            project_path=svc_path,
+            token_budget=token_budget,
+            pipeline_policy=policy,
+            playbook_hints=playbook_hints,
+        )
+        if result.io_meta is None:
+            result.io_meta = {}
+        result.io_meta["service_root"] = rel
+        result.io_meta.setdefault("generation_method", "llm")
+        return result
+
     async def _generate_two_phase_dockerfile(
         self,
         *,

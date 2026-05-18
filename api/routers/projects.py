@@ -305,10 +305,10 @@ async def get_project_result(
     project_id: UUID,
     user: AuthenticatedUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> ProjectResultResponse:
+) -> JSONResponse:
     project = await _get_user_project(project_id, user, db, load_builds=True)
 
-    if project.status not in ("success", "failed"):
+    if project.status not in ("success", "failed", "partial"):
         raise HTTPException(
             status_code=409,
             detail=f"Project is still in '{project.status}' state",
@@ -353,12 +353,20 @@ async def get_project_result(
             cost_estimate_usd=total_cost,
         )
 
-    return ProjectResultResponse(
+    resp = ProjectResultResponse(
         id=project.id,
         status=project.status,
         result=result,
         usage=usage,
         error_summary=project.error_summary,
+    )
+    return JSONResponse(
+        content=resp.model_dump(mode="json"),
+        headers={
+            "Deprecation": "true",
+            "Link": '</api/v2/projects>; rel="successor-version"',
+            "Sunset": "2026-11-01",
+        },
     )
 
 

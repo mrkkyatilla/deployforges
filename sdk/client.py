@@ -25,7 +25,7 @@ from sdk.exceptions import (
     ProjectNotFoundError,
     RateLimitError,
 )
-from sdk.resources import BillingResource, ProjectsResource
+from sdk.resources import BillingResource, ProjectsResource, ProjectsV2Resource
 
 _DEFAULT_ENDPOINT = "https://api.deployforge.dev"
 _DEFAULT_TIMEOUT = 30.0
@@ -39,19 +39,29 @@ class DeployForge:
         api_key: str,
         endpoint: str = _DEFAULT_ENDPOINT,
         timeout: float = _DEFAULT_TIMEOUT,
+        *,
+        api_version: str = "v1",
     ) -> None:
         self._api_key = api_key
         self._endpoint = endpoint.rstrip("/")
+        self._api_version = api_version
         self._http = httpx.Client(
             base_url=self._endpoint,
             timeout=timeout,
         )
         self._projects = ProjectsResource(self)
+        self._projects_v2 = ProjectsV2Resource(self)
         self._billing = BillingResource(self)
 
     @property
-    def projects(self) -> ProjectsResource:
+    def projects(self) -> ProjectsResource | ProjectsV2Resource:
+        if self._api_version == "v2":
+            return self._projects_v2
         return self._projects
+
+    @property
+    def projects_v2(self) -> ProjectsV2Resource:
+        return self._projects_v2
 
     @property
     def billing(self) -> BillingResource:

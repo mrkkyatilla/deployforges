@@ -60,4 +60,5 @@ asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
     "regression: deterministic multi-repo checks (no Gemini)",
+    "integration: orchestrator / pipeline integration (may use Redis)",
 ]

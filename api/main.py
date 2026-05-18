@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.config import settings
 from api.middleware.rate_limit import RateLimitMiddleware
 from api.middleware.security import RequestValidationMiddleware, SecurityHeadersMiddleware
-from api.routers import admin, auth, billing, builds, projects, traces, webhooks
+from api.routers import admin, auth, billing, builds, projects, projects_v2, traces, webhooks
 
 
 @asynccontextmanager
@@ -57,7 +57,8 @@ Per `X-API-Key`, sliding window (`DF_RATE_LIMIT_WINDOW_SECONDS`, default 3600s).
     docs_url="/docs",
     redoc_url="/redoc",
     openapi_tags=[
-        {"name": "projects", "description": "Project creation and management"},
+        {"name": "projects", "description": "Project creation and management (v1 — deprecated)"},
+        {"name": "projects-v2", "description": "Manifest-centric projects (v2)"},
         {"name": "builds", "description": "Build attempts and logs"},
         {"name": "billing", "description": "Credits, usage, and transactions"},
         {"name": "webhooks", "description": "Inbound and outbound webhook management"},
@@ -85,6 +86,7 @@ app.add_middleware(RateLimitMiddleware)
 
 app.include_router(auth.router, prefix="/api/v1")
 app.include_router(projects.router, prefix="/api/v1")
+app.include_router(projects_v2.router, prefix="/api/v2")
 app.include_router(builds.router, prefix="/api/v1")
 app.include_router(billing.router, prefix="/api/v1")
 app.include_router(webhooks.router, prefix="/api/v1")

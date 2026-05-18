@@ -20,6 +20,16 @@ class DeployResult:
 
 
 @dataclass
+class ManifestDeployResult:
+    """v2 API result — DeploymentManifest v1."""
+
+    status: str
+    deployment_manifest: dict[str, Any]
+    usage: dict[str, Any] | None = None
+    error_summary: str | None = None
+
+
+@dataclass
 class BuildResult:
     """Result for an individual build attempt."""
 
@@ -54,7 +64,7 @@ class Project:
 
         deadline = time.monotonic() + timeout
         current = self
-        terminal = {"completed", "failed", "cancelled"}
+        terminal = {"completed", "success", "partial", "failed", "cancelled"}
 
         while current.status not in terminal:
             if time.monotonic() >= deadline:

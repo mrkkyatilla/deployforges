@@ -17,19 +17,20 @@ FIXTURES = Path(__file__).resolve().parent / "fixtures"
 MANIFEST = Path(__file__).resolve().parent / "regression_manifest.yaml"
 
 
-def _manifest_paths() -> list[Path]:
+def _manifest_cases() -> list[dict]:
     data = yaml.safe_load(MANIFEST.read_text(encoding="utf-8"))
     cases = (data or {}).get("cases") or []
-    expected: list[Path] = []
+    out: list[dict] = []
     for c in cases:
         rel = c.get("path")
         if not rel:
             continue
-        expected.append(FIXTURES / str(rel))
-    missing = [p for p in expected if not p.is_dir()]
-    assert not missing, f"Regression manifest lists missing fixture dirs: {[str(m) for m in missing]}"
-    assert len(expected) >= 8, "regression manifest should list at least 8 cases"
-    return expected
+        root = FIXTURES / str(rel)
+        if not root.is_dir():
+            raise AssertionError(f"missing fixture: {root}")
+        out.append({"root": root, "service": c.get("service"), "id": c.get("id", rel)})
+    assert len(out) >= 8, "regression manifest should list at least 8 cases"
+    return out
 
 
 @pytest.mark.regression
@@ -39,12 +40,26 @@ async def test_regression_analyze_lint_prebuild_policy() -> None:
     linter = DockerfileLinter()
     validator = PreBuildValidator()
 
-    for root in _manifest_paths():
-        fp = (await engine.analyze(str(root))).to_dict()
-        assert fp.get("language")
+    for case in _manifest_cases():
+        root = case["root"]
+        svc = case.get("service")
+        label = case.get("id", root.name)
+        if svc:
+            fp_obj = await engine.analyze_service(str(root), str(svc), service_name=str(svc))
+            fp = fp_obj.to_dict()
+            work_root = str(root)
+            allows = fingerprint_allows_template_first(work_root, fp, str(svc))
+            render = lambda: render_template_dockerfile(work_root, fp, service_root=str(svc))
+            pre_root = str((root / str(svc)).resolve())
+        else:
+            fp = (await engine.analyze(str(root))).to_dict()
+            assert fp.get("language")
+            allows = fingerprint_allows_template_first(str(root), fp)
+            render = lambda: render_template_dockerfile(str(root), fp)
+            pre_root = str(root)
 
-        if fingerprint_allows_template_first(str(root), fp):
-            df = render_template_dockerfile(str(root), fp)
+        if allows:
+            df = render()
             assert df and "FROM" in df.upper()
         else:
             df = (
@@ -57,7 +72,7 @@ async def test_regression_analyze_lint_prebuild_policy() -> None:
                 "CMD [\"cat\", \"/app/readme.txt\"]\n"
             )
 
-        assert not check_dockerfile_policy(df), f"policy violations for {root.name}"
+        assert not check_dockerfile_policy(df), f"policy violations for {label}"
         port = None
         pi = fp.get("port")
         if isinstance(pi, dict) and pi.get("value") is not None:
@@ -67,10 +82,10 @@ async def test_regression_analyze_lint_prebuild_policy() -> None:
                 port = None
         lint = linter.lint(df, port=port)
         body = lint.fixed_dockerfile or df
-        assert lint.is_valid or lint.fixed_dockerfile, f"lint failed for {root.name}"
+        assert lint.is_valid or lint.fixed_dockerfile, f"lint failed for {label}"
 
-        pre = await validator.validate(str(root), body)
-        assert pre.can_build, f"prebuild failed for {root.name}: {[e.details for e in pre.errors if e.is_error]}"
+        pre = await validator.validate(pre_root, body)
+        assert pre.can_build, f"prebuild failed for {label}: {[e.details for e in pre.errors if e.is_error]}"
 
 
 def test_compose_merge_patches() -> None:

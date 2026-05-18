@@ -37,6 +37,39 @@ HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \\
 
 CMD {start_command}
 """,
+        "python_uv": """\
+# ===== BUILDER =====
+FROM python:{version}-slim AS builder
+
+WORKDIR /app
+
+RUN pip install --no-cache-dir uv
+
+COPY pyproject.toml uv.lock* ./
+RUN uv sync --frozen --no-dev
+
+COPY . .
+
+# ===== RUNTIME =====
+FROM python:{version}-slim
+
+RUN groupadd -r appgroup && useradd -r -g appgroup -d /app -s /sbin/nologin appuser
+
+WORKDIR /app
+
+COPY --from=builder /app /app
+ENV PATH="/app/.venv/bin:$PATH"
+
+RUN chown -R appuser:appgroup /app
+USER appuser
+
+EXPOSE {port}
+
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s \\
+    CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:{port}/health')" || exit 1
+
+CMD {start_command}
+""",
         "static_analysis": """\
 # ===== BUILDER =====
 FROM python:{version}-slim AS builder
@@ -266,48 +299,84 @@ def select_template(language: str, variant: str = "default") -> str | None:
     return lang_templates.get(variant)
 
 
-def fingerprint_allows_template_first(project_path: str, fingerprint: dict) -> bool:
-    """Strong signal: single-language tree with only requirements.txt or package.json path."""
+def _service_root_path(
+    project_path: str,
+    fingerprint: dict,
+    service_root: str | None,
+) -> Path:
     from pathlib import Path
 
-    if fingerprint.get("is_monorepo"):
+    base = Path(project_path)
+    if service_root:
+        return base / service_root.strip().lstrip("./")
+    env = fingerprint.get("environment") or {}
+    rel = env.get("service_root_rel")
+    if isinstance(rel, str) and rel.strip():
+        return base / rel.strip().lstrip("./")
+    return base
+
+
+def fingerprint_allows_template_first(
+    project_path: str,
+    fingerprint: dict,
+    service_root: str | None = None,
+) -> bool:
+    """Strong signal: servicable tree with requirements.txt, package.json, or uv lockfile."""
+    root = _service_root_path(project_path, fingerprint, service_root)
+    if not root.is_dir():
         return False
-    if len(fingerprint.get("services") or []) > 1:
-        return False
-    root = Path(project_path)
+
+    if not service_root and not (fingerprint.get("environment") or {}).get("service_root_rel"):
+        if fingerprint.get("is_monorepo") and len(fingerprint.get("services") or []) > 1:
+            return False
+        if len(fingerprint.get("services") or []) > 1:
+            return False
+
     lang = (fingerprint.get("language") or {}).get("primary") or ""
     deps = fingerprint.get("dependencies") or {}
     manager = str(deps.get("manager") or "")
 
     if lang == "python":
-        if (root / "pyproject.toml").is_file() or (root / "Pipfile").is_file():
+        if (root / "uv.lock").is_file() and (root / "pyproject.toml").is_file():
+            return True
+        if (root / "Pipfile").is_file():
             return False
         if manager == "pip" and (root / "requirements.txt").is_file():
             return True
+        if (root / "pyproject.toml").is_file() and manager in ("pip", "poetry", "uv"):
+            return bool((root / "requirements.txt").is_file() or (root / "uv.lock").is_file())
         return False
 
     if lang in ("javascript", "typescript"):
         if not (root / "package.json").is_file():
             return False
-        if (root / "pnpm-workspace.yaml").is_file():
+        if (root.parent / "pnpm-workspace.yaml").is_file() and service_root is None:
             return False
         return True
 
     return False
 
 
-def render_template_dockerfile(project_path: str, fingerprint: dict) -> str | None:
+def render_template_dockerfile(
+    project_path: str,
+    fingerprint: dict,
+    service_root: str | None = None,
+) -> str | None:
     """Fill a stock template from fingerprint + on-disk files. Returns None if not supported."""
-    from pathlib import Path
-
-    root = Path(project_path)
+    root = _service_root_path(project_path, fingerprint, service_root)
     lang = (fingerprint.get("language") or {}).get("primary") or "python"
-    template = select_template(lang)
+    fw = fingerprint.get("framework") or {}
+    fw_name = (fw.get("name") or "").lower() if isinstance(fw, dict) else str(fw).lower()
+
+    variant = "default"
+    if lang == "python" and (root / "uv.lock").is_file():
+        variant = "python_uv"
+    template = select_template(lang, variant)
+    if not template and variant != "default":
+        template = select_template(lang)
     if not template:
         return None
 
-    fw = fingerprint.get("framework") or {}
-    fw_name = (fw.get("name") or "").lower() if isinstance(fw, dict) else str(fw).lower()
     start_cmd = "uvicorn main:app --host 0.0.0.0 --port 8000"
     if isinstance(fw, dict) and fw.get("start_command"):
         start_cmd = str(fw["start_command"])
@@ -324,6 +393,15 @@ def render_template_dockerfile(project_path: str, fingerprint: dict) -> str | No
     if lang in ("javascript", "typescript"):
         raw_ver = (fingerprint.get("language") or {}).get("version") or "20"
         lang_ver = re.sub(r"[^0-9.]+.*$", "", str(raw_ver)).strip(".") or "20"
+
+    if lang == "python" and variant == "python_uv":
+        if not (root / "pyproject.toml").is_file():
+            return None
+        return template.format(
+            version=lang_ver,
+            port=port,
+            start_command=start_cmd,
+        )
 
     if lang == "python":
         dep_file = "requirements.txt"

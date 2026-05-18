@@ -313,6 +313,30 @@ class AnalysisEngine:
 
         return monorepo, per_service
 
+    async def analyze_service(
+        self,
+        repo_root: str,
+        service_root: str,
+        *,
+        service_name: str | None = None,
+    ) -> ProjectFingerprint:
+        """Analyze a single service directory within a monorepo repository."""
+        repo = Path(repo_root).resolve()
+        rel = service_root.strip().lstrip("./")
+        svc_path = (repo / rel).resolve()
+        if not svc_path.is_dir():
+            raise FileNotFoundError(f"Service path does not exist: {svc_path}")
+
+        fp = await self.analyze(str(svc_path))
+        env = dict(fp.environment or {})
+        env["parent_monorepo"] = True
+        env["repo_root"] = str(repo)
+        env["service_root_rel"] = rel
+        if service_name:
+            env["service_name"] = service_name
+        fp.environment = env
+        return fp
+
     # ------------------------------------------------------------------
     # FileTree builder
     # ------------------------------------------------------------------

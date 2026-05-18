@@ -124,6 +124,14 @@ class DeployForgeState(TypedDict):
     # Metrics (F0)
     pipeline_step_timings: Annotated[list[dict[str, Any]], operator.add]
 
+    # Multi-service (pipeline_mode=multi_service)
+    resolved_services: list[dict]
+    service_fingerprints: dict[str, dict]
+    service_artifacts: dict[str, dict]
+    services_build_order: list[str]
+    primary_service: str | None
+    deployment_manifest: dict
+
     # Final output
     final_status: str
     final_dockerfile: str
@@ -1797,11 +1805,24 @@ async def run_pipeline(project_id: UUID) -> None:
 
         "dockerfile_pipeline_policy": {},
 
+        "resolved_services": [],
+        "service_fingerprints": {},
+        "service_artifacts": {},
+        "services_build_order": [],
+        "primary_service": None,
+        "deployment_manifest": {},
+
         "final_status": "",
         "final_dockerfile": "",
         "final_dockerignore": "",
         "final_report": {},
     }
+
+    if settings.pipeline_mode == "multi_service":
+        from core.ai.orchestrator_multi import run_multi_service_pipeline
+
+        await run_multi_service_pipeline(project_id)
+        return
 
     compiled = build_deploy_graph()
 

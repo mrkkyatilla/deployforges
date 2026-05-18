@@ -276,6 +276,9 @@ class KanikoBuildSandbox:
         dockerfile_content: str,
         build_id: str,
         dockerignore_content: str | None = None,
+        *,
+        context_path: str | None = None,
+        dockerfile_rel: str | None = None,
     ) -> BuildResult:
         start = time.monotonic()
         gcs_context = f"gs://{self.project}-build-contexts/{build_id}/context.tar.gz"
@@ -283,9 +286,15 @@ class KanikoBuildSandbox:
         job_name = f"build-{build_id[:48]}"
 
         root = Path(project_path)
-        (root / "Dockerfile").write_text(dockerfile_content)
-        if dockerignore_content:
+        ctx = Path(context_path).resolve() if context_path else root
+        df_rel = dockerfile_rel or "Dockerfile"
+        df_path = ctx / df_rel if dockerfile_rel else root / "Dockerfile"
+        df_path.parent.mkdir(parents=True, exist_ok=True)
+        df_path.write_text(dockerfile_content)
+        if dockerignore_content and not dockerfile_rel:
             (root / ".dockerignore").write_text(dockerignore_content)
+        elif dockerignore_content and dockerfile_rel:
+            (df_path.parent / ".dockerignore").write_text(dockerignore_content)
 
         try:
             # Upload build context
@@ -490,19 +499,29 @@ class DockerBuildSandbox:
         dockerfile_content: str,
         build_id: str,
         dockerignore_content: str | None = None,
+        *,
+        context_path: str | None = None,
+        dockerfile_rel: str | None = None,
     ) -> BuildResult:
         start = time.monotonic()
         tag = f"build-{build_id}"
         root = Path(project_path)
-
-        (root / "Dockerfile").write_text(dockerfile_content)
-        if dockerignore_content:
+        ctx = Path(context_path).resolve() if context_path else root
+        df_rel = dockerfile_rel or "Dockerfile"
+        df_path = ctx / df_rel if dockerfile_rel else root / "Dockerfile"
+        df_path.parent.mkdir(parents=True, exist_ok=True)
+        df_path.write_text(dockerfile_content)
+        if dockerignore_content and not dockerfile_rel:
             (root / ".dockerignore").write_text(dockerignore_content)
+        elif dockerignore_content and dockerfile_rel:
+            ign_path = df_path.parent / ".dockerignore"
+            ign_path.write_text(dockerignore_content)
 
+        df_flag = dockerfile_rel if dockerfile_rel else "Dockerfile"
         cmd = [
             "docker", "build",
             "-t", tag,
-            "-f", "Dockerfile",
+            "-f", df_flag,
             "--memory", settings.build_memory_limit.lower().replace("gi", "g"),
             "--cpu-period", "100000",
             "--cpu-quota", str(int(float(settings.build_cpu_limit) * 100_000)),
@@ -514,7 +533,7 @@ class DockerBuildSandbox:
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                cwd=str(root),
+                cwd=str(ctx),
             )
 
             try:

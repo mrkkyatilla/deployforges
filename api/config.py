@@ -103,7 +103,7 @@ class Settings(BaseSettings):
     ai_json_repair_second_attempt_enabled: bool = True
     # Dockerfile AI step gating: ``legacy`` uses the flags above; ``auto`` picks minimal/standard/thorough
     # tiers from fingerprint (monorepo, services, confidence, lockfile, multi-surface tree, etc.).
-    ai_dockerfile_pipeline_mode: Literal["legacy", "auto"] = "legacy"
+    ai_dockerfile_pipeline_mode: Literal["legacy", "auto"] = "auto"
     # Curated playbook hints (YAML + optional Redis). When false, skip hint collection for prompts.
     ai_playbook_hints_enabled: bool = True
     # Redis TTL for reinforced playbook keys (0 = skip Redis read/write; static YAML still applies).
@@ -118,6 +118,15 @@ class Settings(BaseSettings):
     reporter_llm_enabled: bool = False
     # When True: Celery Beat schedules periodic reporter runs (still no public API).
     reporter_beat_enabled: bool = False
+
+    # --- Pipeline mode ---
+    # legacy: single Dockerfile LangGraph (v1 behavior).
+    # multi_service: per-service generation, compose, DeploymentManifest v1.
+    pipeline_mode: Literal["legacy", "multi_service"] = "legacy"
+    max_services_per_project: int = 8
+    validate_worker_build: bool = False
+    cloud_run_primary_only: bool = True
+    ai_compose_patch_enabled: bool = False
 
     # --- Token Budget ---
     default_token_budget: int = 50_000

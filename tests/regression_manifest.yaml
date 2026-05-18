@@ -35,5 +35,11 @@ cases:
   # --- Karmaşık yapılar ---
   - id: monorepo_fullstack
     path: monorepo_fullstack
+  - id: monorepo_fullstack_backend
+    path: monorepo_fullstack
+    service: backend
+  - id: monorepo_fullstack_frontend
+    path: monorepo_fullstack
+    service: frontend
   - id: microservices_grpc
     path: microservices_grpc
